@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/bitiq.App/bitiq.App.csproj" />
+    <Project Path="src/bitiq.Core/bitiq.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/bitiq.Tests/bitiq.Tests.csproj" />
+  </Folder>
+</Solution>

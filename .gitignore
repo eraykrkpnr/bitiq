@@ -1,0 +1,22 @@
+## .NET / Visual Studio build outputs
+bin/
+obj/
+publish/
+.vs/
+TestResults/
+
+## User-specific & IDE files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.tmp
+
+## Packaged release archives & debug symbols
+*.zip
+*.pdb
+
+## Local runtime data (if ever placed in repo)
+models/
+llama/
+settings.json

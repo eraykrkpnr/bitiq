@@ -1,0 +1,87 @@
+<Window x:Class="Bitiq.App.Windows.TestSubtitleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="bitiq"
+        Width="980"
+        Height="520"
+        Background="#0B0F17"
+        WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Üst kontrol çubuğu -->
+        <Border Grid.Row="0" Background="#111827" Padding="12,10" BorderBrush="#1F2937" BorderThickness="0,0,0,1">
+            <WrapPanel VerticalAlignment="Center">
+                <Button Content="Sonraki Satır"
+                        Padding="12,6"
+                        Margin="0,0,8,0"
+                        Background="#0284C7"
+                        Foreground="White"
+                        BorderThickness="0"
+                        Click="NextLine_Click" />
+                <Button x:Name="AutoCycleBtn"
+                        Content="Otomatik Döngü: Kapalı"
+                        Padding="12,6"
+                        Margin="0,0,8,0"
+                        Background="#334155"
+                        Foreground="White"
+                        BorderThickness="0"
+                        Click="ToggleAutoCycle_Click" />
+                <CheckBox x:Name="TypewriterCheck"
+                          Content="Daktilo Efekti (Harf harf)"
+                          Foreground="#E2E8F0"
+                          VerticalAlignment="Center"
+                          Margin="4,0,12,0" />
+                <Button Content="Altyazıyı Gizle (Boş)"
+                        Padding="12,6"
+                        Background="#475569"
+                        Foreground="White"
+                        BorderThickness="0"
+                        Click="ClearLine_Click" />
+            </WrapPanel>
+        </Border>
+
+        <!-- Simüle edilmiş oyun sahnesi alanı -->
+        <Grid Grid.Row="1" Background="#070A10">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Opacity="0.45">
+                <TextBlock Text="PS5 / CAPTURE CARD ÖRNEK GÖRÜNTÜ ALANI"
+                           Foreground="#94A3B8"
+                           FontSize="16"
+                           FontWeight="Bold"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="Ana pencerede 'Çevrilecek alanı seç' diyerek aşağıdaki İngilizce altyazı kutusunu seçin."
+                           Foreground="#64748B"
+                           FontSize="13"
+                           Margin="0,6,0,0"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+        </Grid>
+
+        <!-- İngilizce Altyazı Bölgesi (OCR hedefi) -->
+        <Border x:Name="EnglishSubtitleRegion"
+                Grid.Row="2"
+                Background="#0A0E17"
+                Padding="28,22,28,32"
+                MinHeight="120">
+            <Border Background="#CC000000"
+                    CornerRadius="8"
+                    Padding="20,12"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    MaxWidth="860">
+                <TextBlock x:Name="EnglishSubtitleText"
+                           Text="Wait! Don't open that door, it's a trap!"
+                           Foreground="#FFFFFF"
+                           FontFamily="Segoe UI"
+                           FontSize="30"
+                           FontWeight="SemiBold"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap" />
+            </Border>
+        </Border>
+    </Grid>
+</Window>

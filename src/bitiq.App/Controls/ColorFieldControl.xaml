@@ -1,0 +1,49 @@
+<UserControl x:Class="Bitiq.App.Controls.ColorFieldControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <Button x:Name="SwatchBtn"
+                Width="28"
+                Height="26"
+                BorderBrush="#475569"
+                BorderThickness="1"
+                Margin="0,0,6,0"
+                ToolTip="Renk seçmek için tıklayın"
+                Click="SwatchBtn_Click">
+            <Button.Template>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4"
+                            Cursor="Hand" />
+                </ControlTemplate>
+            </Button.Template>
+        </Button>
+        <TextBox x:Name="HexBox"
+                 Width="82"
+                 Height="26"
+                 VerticalContentAlignment="Center"
+                 Padding="6,0"
+                 Background="#0F172A"
+                 Foreground="#F8FAFC"
+                 BorderBrush="#334155"
+                 FontFamily="Consolas"
+                 FontSize="12"
+                 LostFocus="HexBox_LostFocus"
+                 KeyDown="HexBox_KeyDown" />
+        <Popup x:Name="PalettePopup"
+               PlacementTarget="{Binding ElementName=SwatchBtn}"
+               Placement="Bottom"
+               StaysOpen="False"
+               AllowsTransparency="True">
+            <Border Background="#1E293B"
+                    BorderBrush="#475569"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="8">
+                <UniformGrid x:Name="PaletteGrid" Columns="6" Width="168" />
+            </Border>
+        </Popup>
+    </StackPanel>
+</UserControl>

@@ -1,0 +1,60 @@
+<Window x:Class="Bitiq.App.Windows.RegionSelectorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="bitiq"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="#78000000"
+        Topmost="True"
+        ShowInTaskbar="False"
+        Cursor="Cross"
+        ResizeMode="NoResize">
+    <Canvas x:Name="OverlayCanvas"
+            Background="Transparent"
+            MouseLeftButtonDown="Canvas_MouseLeftButtonDown"
+            MouseMove="Canvas_MouseMove"
+            MouseLeftButtonUp="Canvas_MouseLeftButtonUp">
+        <Border x:Name="WindowPreviewContainer"
+                Visibility="Collapsed"
+                BorderBrush="#10B981"
+                BorderThickness="2"
+                Background="#22000000"
+                IsHitTestVisible="False">
+            <Image x:Name="WindowPreviewImage"
+                   Stretch="Fill"
+                   RenderOptions.BitmapScalingMode="HighQuality" />
+        </Border>
+
+        <Border Canvas.Left="24"
+                Canvas.Top="24"
+                Background="#DD0F172A"
+                BorderBrush="#38BDF8"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="14,8"
+                IsHitTestVisible="False">
+            <TextBlock x:Name="InstructionText"
+                       Text="İngilizce altyazının göründüğü dikdörtgen bölgeyi fare ile sürükleyip seçin • İptal için ESC"
+                       Foreground="#F8FAFC"
+                       FontSize="14"
+                       FontWeight="SemiBold" />
+        </Border>
+
+        <Border x:Name="SelectionBox"
+                Visibility="Collapsed"
+                BorderBrush="#38BDF8"
+                BorderThickness="2"
+                Background="#2238BDF8" />
+
+        <Border x:Name="SizeBadge"
+                Visibility="Collapsed"
+                Background="#E60F172A"
+                CornerRadius="4"
+                Padding="8,3">
+            <TextBlock x:Name="SizeBadgeText"
+                       Foreground="#38BDF8"
+                       FontSize="12"
+                       FontWeight="Bold" />
+        </Border>
+    </Canvas>
+</Window>
