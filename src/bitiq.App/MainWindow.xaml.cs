@@ -41,18 +41,38 @@ public partial class MainWindow : Window
     private List<string> _allFontNames = [];
     private int _uiSuppressCount = 1;
     private bool _isStartingOrSwitching;
+    private bool _isInstallingOcr;
+    private PipelineState _currentPipelineState = PipelineState.Stopped;
     private DispatcherTimer? _overlapCheckTimer;
     private DispatcherTimer? _perfTimer;
     private SubtitleUpdateEvent? _lastSubtitleEvent;
 
     private bool IsUiSuppressed => _uiSuppressCount > 0 || !IsLoaded || _settings is null || _obsServer is null;
+    private bool IsEnglishUi => string.Equals(_settings.UiLanguage, "en", StringComparison.OrdinalIgnoreCase);
+
+    private static readonly SolidColorBrush BrushInstalledName = CreateFrozenBrush(15, 23, 42);
+    private static readonly SolidColorBrush BrushMissingName = CreateFrozenBrush(100, 116, 139);
+    private static readonly SolidColorBrush BrushInstalledStatus = CreateFrozenBrush(21, 128, 61);
+    private static readonly SolidColorBrush BrushMissingStatus = CreateFrozenBrush(180, 83, 9);
+    private static readonly SolidColorBrush BrushInfoMuted = CreateFrozenBrush(148, 163, 184);
+    private static readonly SolidColorBrush BrushInfoAccent = CreateFrozenBrush(56, 189, 248);
+    private static readonly SolidColorBrush BrushInfoOk = CreateFrozenBrush(74, 222, 128);
+    private static readonly SolidColorBrush BrushInfoWarn = CreateFrozenBrush(253, 230, 138);
+    private static readonly SolidColorBrush BrushInfoErr = CreateFrozenBrush(252, 165, 165);
+
+    private static SolidColorBrush CreateFrozenBrush(byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        brush.Freeze();
+        return brush;
+    }
 
     public MainWindow()
     {
         _settings = _settingsService.Load();
         InitializeComponent();
 
-        _ocrService = new WindowsOcrService(_settings.OcrPreprocessEnabled);
+        _ocrService = new WindowsOcrService(_settings.OcrPreprocessEnabled, _settings.SourceLanguage);
         _downloadService = new ModelDownloadService(_settingsService);
         _llamaManager = new LlamaServerManager(_downloadService);
         _googleTranslator = new GoogleGtxTranslator(_translationCache);
@@ -146,6 +166,7 @@ public partial class MainWindow : Window
             PopulateFontList();
             LoadSettingsIntoUi();
             CheckEnvironmentWarnings();
+            ApplyUiLanguage();
 
             // Ekran overlay'ini hazırla
             _overlayWindow.ApplySavedBounds(_settings.OverlayBounds);
@@ -200,7 +221,9 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(driver.WarningMessage))
         {
             DriverWarningBanner.Visibility = Visibility.Visible;
-            DriverWarningText.Text = $"⚠ {driver.WarningMessage} {driver.UpdateInstructions}";
+            DriverWarningText.Text = IsEnglishUi
+                ? $"⚠ {driver.WarningMessage} Open GeForce Experience or nvidia.com to update your GPU driver."
+                : $"⚠ {driver.WarningMessage} {driver.UpdateInstructions}";
         }
         else
         {
@@ -246,6 +269,28 @@ public partial class MainWindow : Window
         public override string ToString() => Label;
     }
 
+    private sealed class SourceLanguageItem
+    {
+        public string Code { get; init; } = "en";
+        public string DisplayName { get; init; } = string.Empty;
+        public bool IsInstalled { get; init; }
+        public string StatusText { get; init; } = string.Empty;
+        public Brush NameBrush { get; init; } = Brushes.Black;
+        public FontWeight NameWeight { get; init; } = FontWeights.Normal;
+        public Brush StatusBrush { get; init; } = Brushes.DarkGreen;
+        public string DownloadButtonText { get; init; } = string.Empty;
+        public string DownloadTooltip { get; init; } = string.Empty;
+        public Visibility DownloadButtonVisibility { get; init; } = Visibility.Collapsed;
+        public override string ToString() => DisplayName;
+    }
+
+    private sealed class TargetLanguageItem
+    {
+        public string Code { get; init; } = "tr";
+        public string DisplayName { get; init; } = string.Empty;
+        public override string ToString() => DisplayName;
+    }
+
     private void LoadSettingsIntoUi()
     {
         _uiSuppressCount++;
@@ -268,7 +313,7 @@ public partial class MainWindow : Window
             SelectComboTag(StabilityFramesCombo, _settings.StabilityFrames.ToString());
             SelectComboTag(ThreadsCombo, _settings.LlamaThreads.ToString());
             DebounceSlider.Value = _settings.TypewriterDebounceMs;
-            DebounceLabel.Text = $"Daktilo Beklemesi (N ms değişmeyince çevir): {_settings.TypewriterDebounceMs} ms";
+            UpdateDebounceLabel();
             StreamingCheck.IsChecked = _settings.StreamingEnabled;
             StreamingMainCheck.IsChecked = _settings.StreamingEnabled;
             PreprocessCheck.IsChecked = _settings.OcrPreprocessEnabled;
@@ -289,74 +334,53 @@ public partial class MainWindow : Window
             if (!string.IsNullOrWhiteSpace(s.FontFamily) && _allFontNames.Contains(s.FontFamily, StringComparer.OrdinalIgnoreCase))
                 FontFamilyCombo.SelectedItem = _allFontNames.First(n => n.Equals(s.FontFamily, StringComparison.OrdinalIgnoreCase));
 
-        FontSizeSlider.Value = s.FontSize;
-        FontSizeLabel.Text = $"2. Yazı Boyutu: {s.FontSize:0} px";
-        TextColorPicker.ColorHex = s.TextColorHex;
-        BgColorPicker.ColorHex = s.BackgroundColorHex;
-        BgOpacitySlider.Value = s.BackgroundOpacity;
-        BgOpacityLabel.Text = $"5. Arka Plan Opaklığı: %{s.BackgroundOpacity:0}";
-        SelectComboTag(PositionPresetCombo, s.PositionPreset.ToString());
+            FontSizeSlider.Value = s.FontSize;
+            TextColorPicker.ColorHex = s.TextColorHex;
+            BgColorPicker.ColorHex = s.BackgroundColorHex;
+            BgOpacitySlider.Value = s.BackgroundOpacity;
+            SelectComboTag(PositionPresetCombo, s.PositionPreset.ToString());
 
-        SelectComboTag(FontWeightCombo, s.FontWeight.ToString());
-        SelectComboTag(TextAlignCombo, s.TextAlignment.ToString());
-        LetterSpacingSlider.Value = s.LetterSpacing;
-        LetterSpacingLabel.Text = $"Harf Aralığı: {s.LetterSpacing:0.0} px";
-        LineHeightSlider.Value = s.LineHeight;
-        LineHeightLabel.Text = $"Satır Aralığı: {s.LineHeight:0.00}";
-        ItalicCheck.IsChecked = s.IsItalic;
-        UppercaseCheck.IsChecked = s.Uppercase;
+            SelectComboTag(FontWeightCombo, s.FontWeight.ToString());
+            SelectComboTag(TextAlignCombo, s.TextAlignment.ToString());
+            LetterSpacingSlider.Value = s.LetterSpacing;
+            LineHeightSlider.Value = s.LineHeight;
+            ItalicCheck.IsChecked = s.IsItalic;
+            UppercaseCheck.IsChecked = s.Uppercase;
 
-        TextOpacitySlider.Value = s.TextOpacity;
-        TextOpacityLabel.Text = $"Yazı Opaklığı: %{s.TextOpacity:0}";
-        OutlineColorPicker.ColorHex = s.OutlineColorHex;
-        OutlineThickSlider.Value = s.OutlineThickness;
-        OutlineThickLabel.Text = $"Kontur Kalınlığı: {s.OutlineThickness:0.0} px";
-        ShadowColorPicker.ColorHex = s.ShadowColorHex;
-        ShadowOpacitySlider.Value = s.ShadowOpacity;
-        ShadowOpacityLabel.Text = $"Gölge Opaklığı: %{s.ShadowOpacity:0}";
-        ShadowBlurSlider.Value = s.ShadowBlur;
-        ShadowBlurLabel.Text = $"Gölge Bulanıklığı: {s.ShadowBlur:0}";
-        ShadowXSlider.Value = s.ShadowOffsetX;
-        ShadowXLabel.Text = $"Gölge X: {s.ShadowOffsetX:0}";
-        ShadowYSlider.Value = s.ShadowOffsetY;
-        ShadowYLabel.Text = $"Gölge Y: {s.ShadowOffsetY:0}";
+            TextOpacitySlider.Value = s.TextOpacity;
+            OutlineColorPicker.ColorHex = s.OutlineColorHex;
+            OutlineThickSlider.Value = s.OutlineThickness;
+            ShadowColorPicker.ColorHex = s.ShadowColorHex;
+            ShadowOpacitySlider.Value = s.ShadowOpacity;
+            ShadowBlurSlider.Value = s.ShadowBlur;
+            ShadowXSlider.Value = s.ShadowOffsetX;
+            ShadowYSlider.Value = s.ShadowOffsetY;
 
-        SelectComboTag(BgModeCombo, s.BackgroundMode.ToString());
-        RadiusSlider.Value = s.BorderRadius;
-        RadiusLabel.Text = $"Köşe Yuvarlaklığı: {s.BorderRadius:0}";
-        PadHSlider.Value = s.PaddingHorizontal;
-        PadHLabel.Text = $"Yatay İç Boşluk: {s.PaddingHorizontal:0}";
-        PadVSlider.Value = s.PaddingVertical;
-        PadVLabel.Text = $"Dikey İç Boşluk: {s.PaddingVertical:0}";
-        BorderColorPicker.ColorHex = s.BorderColorHex;
-        BorderThickSlider.Value = s.BorderThickness;
-        BorderThickLabel.Text = $"Kenarlık Kalınlığı: {s.BorderThickness:0.0}";
+            SelectComboTag(BgModeCombo, s.BackgroundMode.ToString());
+            RadiusSlider.Value = s.BorderRadius;
+            PadHSlider.Value = s.PaddingHorizontal;
+            PadVSlider.Value = s.PaddingVertical;
+            BorderColorPicker.ColorHex = s.BorderColorHex;
+            BorderThickSlider.Value = s.BorderThickness;
 
-        OffsetXSlider.Value = s.OffsetXPercent;
-        OffsetXLabel.Text = $"İnce Ayar X: %{s.OffsetXPercent:0}";
-        OffsetYSlider.Value = s.OffsetYPercent;
-        OffsetYLabel.Text = $"İnce Ayar Y: %{s.OffsetYPercent:0}";
-        MaxWidthSlider.Value = s.MaxWidthPercent;
-        MaxWidthLabel.Text = $"Azami Genişlik: %{s.MaxWidthPercent:0}";
-        MaxLinesSlider.Value = s.MaxLines;
-        MaxLinesLabel.Text = $"Azami Satır: {s.MaxLines}";
-        SelectComboTag(OverflowCombo, s.OverflowMode.ToString());
+            OffsetXSlider.Value = s.OffsetXPercent;
+            OffsetYSlider.Value = s.OffsetYPercent;
+            MaxWidthSlider.Value = s.MaxWidthPercent;
+            MaxLinesSlider.Value = s.MaxLines;
+            SelectComboTag(OverflowCombo, s.OverflowMode.ToString());
 
-        SelectComboTag(AnimTypeCombo, s.AnimationType.ToString());
-        AnimDurSlider.Value = s.AnimationDurationMs;
-        AnimDurLabel.Text = $"Animasyon Süresi: {s.AnimationDurationMs} ms";
-        LingerSlider.Value = s.LingerAfterDisappearMs;
-        LingerLabel.Text = $"Kaybolma Gecikmesi: {s.LingerAfterDisappearMs} ms";
-        MinDisplaySlider.Value = s.MinDisplayDurationMs;
-        MinDisplayLabel.Text = $"En Az Gösterim: {s.MinDisplayDurationMs} ms";
+            SelectComboTag(AnimTypeCombo, s.AnimationType.ToString());
+            AnimDurSlider.Value = s.AnimationDurationMs;
+            LingerSlider.Value = s.LingerAfterDisappearMs;
+            MinDisplaySlider.Value = s.MinDisplayDurationMs;
 
-        ShowOriginalCheck.IsChecked = s.ShowOriginalText;
-        OrigSizeSlider.Value = s.OriginalFontSize;
-        OrigSizeLabel.Text = $"Orijinal Boyut: {s.OriginalFontSize:0} px";
+            ShowOriginalCheck.IsChecked = s.ShowOriginalText;
+            OrigSizeSlider.Value = s.OriginalFontSize;
             OrigColorPicker.ColorHex = s.OriginalTextColorHex;
             OrigOpacitySlider.Value = s.OriginalTextOpacity;
-            OrigOpacityLabel.Text = $"Orijinal Opaklık: %{s.OriginalTextOpacity:0}";
             OrigItalicCheck.IsChecked = s.OriginalIsItalic;
+
+            UpdateStyleSliderLabels(s);
         }
         finally
         {
@@ -376,11 +400,9 @@ public partial class MainWindow : Window
             s.FontFamily = fontName;
 
         s.FontSize = FontSizeSlider.Value;
-        FontSizeLabel.Text = $"2. Yazı Boyutu: {s.FontSize:0} px";
         s.TextColorHex = TextColorPicker.ColorHex;
         s.BackgroundColorHex = BgColorPicker.ColorHex;
         s.BackgroundOpacity = BgOpacitySlider.Value;
-        BgOpacityLabel.Text = $"5. Arka Plan Opaklığı: %{s.BackgroundOpacity:0}";
         if (Enum.TryParse<SubtitlePositionPreset>(GetComboTag(PositionPresetCombo), out var preset))
             s.PositionPreset = preset;
 
@@ -389,69 +411,112 @@ public partial class MainWindow : Window
         if (Enum.TryParse<SubtitleTextAlign>(GetComboTag(TextAlignCombo), out var align))
             s.TextAlignment = align;
         s.LetterSpacing = LetterSpacingSlider.Value;
-        LetterSpacingLabel.Text = $"Harf Aralığı: {s.LetterSpacing:0.0} px";
         s.LineHeight = LineHeightSlider.Value;
-        LineHeightLabel.Text = $"Satır Aralığı: {s.LineHeight:0.00}";
         s.IsItalic = ItalicCheck.IsChecked == true;
         s.Uppercase = UppercaseCheck.IsChecked == true;
 
         s.TextOpacity = TextOpacitySlider.Value;
-        TextOpacityLabel.Text = $"Yazı Opaklığı: %{s.TextOpacity:0}";
         s.OutlineColorHex = OutlineColorPicker.ColorHex;
         s.OutlineThickness = OutlineThickSlider.Value;
-        OutlineThickLabel.Text = $"Kontur Kalınlığı: {s.OutlineThickness:0.0} px";
         s.ShadowColorHex = ShadowColorPicker.ColorHex;
         s.ShadowOpacity = ShadowOpacitySlider.Value;
-        ShadowOpacityLabel.Text = $"Gölge Opaklığı: %{s.ShadowOpacity:0}";
         s.ShadowBlur = ShadowBlurSlider.Value;
-        ShadowBlurLabel.Text = $"Gölge Bulanıklığı: {s.ShadowBlur:0}";
         s.ShadowOffsetX = ShadowXSlider.Value;
-        ShadowXLabel.Text = $"Gölge X: {s.ShadowOffsetX:0}";
         s.ShadowOffsetY = ShadowYSlider.Value;
-        ShadowYLabel.Text = $"Gölge Y: {s.ShadowOffsetY:0}";
 
         if (Enum.TryParse<SubtitleBackgroundMode>(GetComboTag(BgModeCombo), out var bgMode))
             s.BackgroundMode = bgMode;
         s.BorderRadius = RadiusSlider.Value;
-        RadiusLabel.Text = $"Köşe Yuvarlaklığı: {s.BorderRadius:0}";
         s.PaddingHorizontal = PadHSlider.Value;
-        PadHLabel.Text = $"Yatay İç Boşluk: {s.PaddingHorizontal:0}";
         s.PaddingVertical = PadVSlider.Value;
-        PadVLabel.Text = $"Dikey İç Boşluk: {s.PaddingVertical:0}";
         s.BorderColorHex = BorderColorPicker.ColorHex;
         s.BorderThickness = BorderThickSlider.Value;
-        BorderThickLabel.Text = $"Kenarlık Kalınlığı: {s.BorderThickness:0.0}";
 
         s.OffsetXPercent = OffsetXSlider.Value;
-        OffsetXLabel.Text = $"İnce Ayar X: %{s.OffsetXPercent:0}";
         s.OffsetYPercent = OffsetYSlider.Value;
-        OffsetYLabel.Text = $"İnce Ayar Y: %{s.OffsetYPercent:0}";
         s.MaxWidthPercent = MaxWidthSlider.Value;
-        MaxWidthLabel.Text = $"Azami Genişlik: %{s.MaxWidthPercent:0}";
         s.MaxLines = (int)MaxLinesSlider.Value;
-        MaxLinesLabel.Text = $"Azami Satır: {s.MaxLines}";
         if (Enum.TryParse<SubtitleOverflowMode>(GetComboTag(OverflowCombo), out var overflow))
             s.OverflowMode = overflow;
 
         if (Enum.TryParse<SubtitleAnimationType>(GetComboTag(AnimTypeCombo), out var anim))
             s.AnimationType = anim;
         s.AnimationDurationMs = (int)AnimDurSlider.Value;
-        AnimDurLabel.Text = $"Animasyon Süresi: {s.AnimationDurationMs} ms";
         s.LingerAfterDisappearMs = (int)LingerSlider.Value;
-        LingerLabel.Text = $"Kaybolma Gecikmesi: {s.LingerAfterDisappearMs} ms";
         s.MinDisplayDurationMs = (int)MinDisplaySlider.Value;
-        MinDisplayLabel.Text = $"En Az Gösterim: {s.MinDisplayDurationMs} ms";
 
         s.ShowOriginalText = ShowOriginalCheck.IsChecked == true;
         s.OriginalFontSize = OrigSizeSlider.Value;
-        OrigSizeLabel.Text = $"Orijinal Boyut: {s.OriginalFontSize:0} px";
         s.OriginalTextColorHex = OrigColorPicker.ColorHex;
         s.OriginalTextOpacity = OrigOpacitySlider.Value;
-        OrigOpacityLabel.Text = $"Orijinal Opaklık: %{s.OriginalTextOpacity:0}";
         s.OriginalIsItalic = OrigItalicCheck.IsChecked == true;
 
+        UpdateStyleSliderLabels(s);
         BroadcastStyleLive();
         _settingsService.Save(_settings);
+    }
+
+    private void UpdateStyleSliderLabels(StyleProfile s)
+    {
+        if (IsEnglishUi)
+        {
+            FontSizeLabel.Text = $"2. Font Size: {s.FontSize:0} px";
+            BgOpacityLabel.Text = $"5. Background Opacity: {s.BackgroundOpacity:0}%";
+            LetterSpacingLabel.Text = $"Letter Spacing: {s.LetterSpacing:0.0} px";
+            LineHeightLabel.Text = $"Line Height: {s.LineHeight:0.00}";
+            TextOpacityLabel.Text = $"Text Opacity: {s.TextOpacity:0}%";
+            OutlineThickLabel.Text = $"Outline Thickness: {s.OutlineThickness:0.0} px";
+            ShadowOpacityLabel.Text = $"Shadow Opacity: {s.ShadowOpacity:0}%";
+            ShadowBlurLabel.Text = $"Shadow Blur: {s.ShadowBlur:0}";
+            ShadowXLabel.Text = $"Shadow X: {s.ShadowOffsetX:0}";
+            ShadowYLabel.Text = $"Shadow Y: {s.ShadowOffsetY:0}";
+            RadiusLabel.Text = $"Corner Radius: {s.BorderRadius:0}";
+            PadHLabel.Text = $"Padding X: {s.PaddingHorizontal:0}";
+            PadVLabel.Text = $"Padding Y: {s.PaddingVertical:0}";
+            BorderThickLabel.Text = $"Border Thickness: {s.BorderThickness:0.0}";
+            OffsetXLabel.Text = $"Fine Offset X: {s.OffsetXPercent:0}%";
+            OffsetYLabel.Text = $"Fine Offset Y: {s.OffsetYPercent:0}%";
+            MaxWidthLabel.Text = $"Max Width: {s.MaxWidthPercent:0}%";
+            MaxLinesLabel.Text = $"Max Lines: {s.MaxLines}";
+            AnimDurLabel.Text = $"Animation Duration: {s.AnimationDurationMs} ms";
+            LingerLabel.Text = $"Linger Delay: {s.LingerAfterDisappearMs} ms";
+            MinDisplayLabel.Text = $"Min Display: {s.MinDisplayDurationMs} ms";
+            OrigSizeLabel.Text = $"Original Size: {s.OriginalFontSize:0} px";
+            OrigOpacityLabel.Text = $"Original Opacity: {s.OriginalTextOpacity:0}%";
+        }
+        else
+        {
+            FontSizeLabel.Text = $"2. Yazı Boyutu: {s.FontSize:0} px";
+            BgOpacityLabel.Text = $"5. Arka Plan Opaklığı: %{s.BackgroundOpacity:0}";
+            LetterSpacingLabel.Text = $"Harf Aralığı: {s.LetterSpacing:0.0} px";
+            LineHeightLabel.Text = $"Satır Aralığı: {s.LineHeight:0.00}";
+            TextOpacityLabel.Text = $"Yazı Opaklığı: %{s.TextOpacity:0}";
+            OutlineThickLabel.Text = $"Kontur Kalınlığı: {s.OutlineThickness:0.0} px";
+            ShadowOpacityLabel.Text = $"Gölge Opaklığı: %{s.ShadowOpacity:0}";
+            ShadowBlurLabel.Text = $"Gölge Bulanıklığı: {s.ShadowBlur:0}";
+            ShadowXLabel.Text = $"Gölge X: {s.ShadowOffsetX:0}";
+            ShadowYLabel.Text = $"Gölge Y: {s.ShadowOffsetY:0}";
+            RadiusLabel.Text = $"Köşe Yuvarlaklığı: {s.BorderRadius:0}";
+            PadHLabel.Text = $"Yatay İç Boşluk: {s.PaddingHorizontal:0}";
+            PadVLabel.Text = $"Dikey İç Boşluk: {s.PaddingVertical:0}";
+            BorderThickLabel.Text = $"Kenarlık Kalınlığı: {s.BorderThickness:0.0}";
+            OffsetXLabel.Text = $"İnce Ayar X: %{s.OffsetXPercent:0}";
+            OffsetYLabel.Text = $"İnce Ayar Y: %{s.OffsetYPercent:0}";
+            MaxWidthLabel.Text = $"Azami Genişlik: %{s.MaxWidthPercent:0}";
+            MaxLinesLabel.Text = $"Azami Satır: {s.MaxLines}";
+            AnimDurLabel.Text = $"Animasyon Süresi: {s.AnimationDurationMs} ms";
+            LingerLabel.Text = $"Kaybolma Gecikmesi: {s.LingerAfterDisappearMs} ms";
+            MinDisplayLabel.Text = $"En Az Gösterim: {s.MinDisplayDurationMs} ms";
+            OrigSizeLabel.Text = $"Orijinal Boyut: {s.OriginalFontSize:0} px";
+            OrigOpacityLabel.Text = $"Orijinal Opaklık: %{s.OriginalTextOpacity:0}";
+        }
+    }
+
+    private void UpdateDebounceLabel()
+    {
+        DebounceLabel.Text = IsEnglishUi
+            ? $"Typewriter Debounce (wait N ms): {_settings.TypewriterDebounceMs} ms"
+            : $"Daktilo Beklemesi (N ms değişmeyince çevir): {_settings.TypewriterDebounceMs} ms";
     }
 
     private void BroadcastStyleLive()
@@ -485,30 +550,36 @@ public partial class MainWindow : Window
 
     private void UpdateStatusDisplay(PipelineState state, string message)
     {
+        _currentPipelineState = state;
         StatusDetailText.Text = message;
+        ApplyPipelineStatusLabels(state);
+    }
+
+    private void ApplyPipelineStatusLabels(PipelineState state)
+    {
         switch (state)
         {
             case PipelineState.Running:
-                StatusTitleText.Text = "Çalışıyor";
+                StatusTitleText.Text = IsEnglishUi ? "Running" : "Çalışıyor";
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(74, 222, 128));
-                StartStopBtn.Content = "■  Durdur";
+                StartStopBtn.Content = IsEnglishUi ? "■  Stop" : "■  Durdur";
                 StartStopBtn.Background = new SolidColorBrush(Color.FromRgb(220, 38, 38));
                 break;
             case PipelineState.Initializing:
-                StatusTitleText.Text = "Model yükleniyor…";
+                StatusTitleText.Text = IsEnglishUi ? "Loading model…" : "Model yükleniyor…";
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(56, 189, 248));
-                StartStopBtn.Content = "Bekleyin…";
+                StartStopBtn.Content = IsEnglishUi ? "Please wait…" : "Bekleyin…";
                 break;
             case PipelineState.Error:
-                StatusTitleText.Text = "Hata";
+                StatusTitleText.Text = IsEnglishUi ? "Error" : "Hata";
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(239, 68, 68));
-                StartStopBtn.Content = "▶  Başlat";
+                StartStopBtn.Content = IsEnglishUi ? "▶  Start" : "▶  Başlat";
                 StartStopBtn.Background = new SolidColorBrush(Color.FromRgb(2, 132, 199));
                 break;
             default:
-                StatusTitleText.Text = "Hazır";
+                StatusTitleText.Text = IsEnglishUi ? "Ready" : "Hazır";
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(148, 163, 184));
-                StartStopBtn.Content = "▶  Başlat";
+                StartStopBtn.Content = IsEnglishUi ? "▶  Start" : "▶  Başlat";
                 StartStopBtn.Background = new SolidColorBrush(Color.FromRgb(2, 132, 199));
                 break;
         }
@@ -528,8 +599,10 @@ public partial class MainWindow : Window
         if (_settings.CaptureRegion is not { IsValid: true })
         {
             MessageBox.Show(
-                "Henüz ekrandan altyazı bölgesi seçmediniz.\nÖnce 'Çevrilecek Alanı Seç' düğmesine basarak İngilizce altyazıların çıktığı dikdörtgeni işaretleyin.",
-                "Alan Seçilmedi",
+                IsEnglishUi
+                    ? "You have not selected a capture region yet.\nClick 'Select Region' first and draw a rectangle over the on-screen subtitles."
+                    : "Henüz ekrandan altyazı bölgesi seçmediniz.\nÖnce 'Çevrilecek Alanı Seç' düğmesine basarak altyazıların çıktığı dikdörtgeni işaretleyin.",
+                IsEnglishUi ? "No Region Selected" : "Alan Seçilmedi",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             return;
@@ -608,7 +681,7 @@ public partial class MainWindow : Window
         {
             new CaptureTargetOption
             {
-                Label = "🖥 Tüm Ekran (Masaüstü / Monitör Yakalama)",
+                Label = IsEnglishUi ? "🖥 Full Screen (Desktop / Monitor Capture)" : "🖥 Tüm Ekran (Masaüstü / Monitör Yakalama)",
                 Window = null
             }
         };
@@ -617,7 +690,9 @@ public partial class MainWindow : Window
         {
             items.Add(new CaptureTargetOption
             {
-                Label = win.IsMinimized ? $"🎯 {win.DisplayName} [Simge Durumunda]" : $"🎯 {win.DisplayName}",
+                Label = win.IsMinimized
+                    ? (IsEnglishUi ? $"🎯 {win.DisplayName} [Minimized]" : $"🎯 {win.DisplayName} [Simge Durumunda]")
+                    : $"🎯 {win.DisplayName}",
                 Window = win
             });
         }
@@ -674,11 +749,15 @@ public partial class MainWindow : Window
 
         if (CaptureTargetCombo.SelectedItem is CaptureTargetOption { Window: { } win })
         {
-            StatusDetailText.Text = $"Hedef pencere seçildi: [{win.ProcessName}] {win.Title}. Şimdi 'Çevrilecek Alanı Seç' ile pencere içindeki altyazı alanını işaretleyin.";
+            StatusDetailText.Text = IsEnglishUi
+                ? $"Target window selected: [{win.ProcessName}] {win.Title}. Click 'Select Region' to draw the subtitle area inside it."
+                : $"Hedef pencere seçildi: [{win.ProcessName}] {win.Title}. Şimdi 'Çevrilecek Alanı Seç' ile pencere içindeki altyazı alanını işaretleyin.";
         }
         else
         {
-            StatusDetailText.Text = "Tüm Ekran (Monitör) modu seçildi. Yeni alan seçmek için 'Çevrilecek Alanı Seç' düğmesini kullanın.";
+            StatusDetailText.Text = IsEnglishUi
+                ? "Full Screen (Monitor) mode selected. Use 'Select Region' to mark a capture box."
+                : "Tüm Ekran (Monitör) modu seçildi. Yeni alan seçmek için 'Çevrilecek Alanı Seç' düğmesini kullanın.";
         }
     }
 
@@ -770,16 +849,22 @@ public partial class MainWindow : Window
         {
             if (r.IsWindowLocked)
             {
-                RegionSummaryText.Text = $"🎯 Pencereye Kilitli: [{r.TargetWindowProcessName}] {r.TargetWindowTitle}  •  İç Konum: ({r.WindowRelativeX}, {r.WindowRelativeY})  •  Boyut: {r.Width} × {r.Height} px";
+                RegionSummaryText.Text = IsEnglishUi
+                    ? $"🎯 Window Locked: [{r.TargetWindowProcessName}] {r.TargetWindowTitle}  •  Offset: ({r.WindowRelativeX}, {r.WindowRelativeY})  •  Size: {r.Width} × {r.Height} px"
+                    : $"🎯 Pencereye Kilitli: [{r.TargetWindowProcessName}] {r.TargetWindowTitle}  •  İç Konum: ({r.WindowRelativeX}, {r.WindowRelativeY})  •  Boyut: {r.Width} × {r.Height} px";
             }
             else
             {
-                RegionSummaryText.Text = $"🖥 Ekran Bölgesi: ({r.X}, {r.Y})  •  Boyut: {r.Width} × {r.Height} px  ({r.MonitorDeviceName})";
+                RegionSummaryText.Text = IsEnglishUi
+                    ? $"🖥 Screen Region: ({r.X}, {r.Y})  •  Size: {r.Width} × {r.Height} px  ({r.MonitorDeviceName})"
+                    : $"🖥 Ekran Bölgesi: ({r.X}, {r.Y})  •  Boyut: {r.Width} × {r.Height} px  ({r.MonitorDeviceName})";
             }
         }
         else
         {
-            RegionSummaryText.Text = "Henüz alan seçilmedi — yukarıdaki 'Çevrilecek Alanı Seç' düğmesine tıklayın.";
+            RegionSummaryText.Text = IsEnglishUi
+                ? "No region selected yet — click 'Select Region' above."
+                : "Henüz alan seçilmedi — yukarıdaki 'Çevrilecek Alanı Seç' düğmesine tıklayın.";
         }
     }
 
@@ -1008,9 +1093,9 @@ public partial class MainWindow : Window
         try
         {
             ToggleScreenOverlayBtn.IsChecked = show;
-            ToggleScreenOverlayBtn.Content = show
-                ? "👁  Ekran Altyazısı: Açık"
-                : "🚫  Ekran Altyazısı: Kapalı (OBS)";
+            ToggleScreenOverlayBtn.Content = IsEnglishUi
+                ? (show ? "👁  Screen Subtitle: On" : "🚫  Screen Subtitle: Off (OBS)")
+                : (show ? "👁  Ekran Altyazısı: Açık" : "🚫  Ekran Altyazısı: Kapalı (OBS)");
             ShowScreenOverlayMainCheck.IsChecked = show;
             ShowScreenOverlayCheck.IsChecked = show;
         }
@@ -1151,7 +1236,7 @@ public partial class MainWindow : Window
             return;
 
         _settings.TypewriterDebounceMs = (int)DebounceSlider.Value;
-        DebounceLabel.Text = $"Daktilo Beklemesi (N ms değişmeyince çevir): {_settings.TypewriterDebounceMs} ms";
+        UpdateDebounceLabel();
         _settingsService.Save(_settings);
         _pipeline.ApplyLiveSettings(_settings);
     }
@@ -1225,6 +1310,13 @@ public partial class MainWindow : Window
         {
             _settingsService.Save(_settings);
             LoadSettingsIntoUi();
+            ApplyUiLanguage();
+        }
+        else
+        {
+            // Sihirbaz içinde TR/EN değiştirilmiş olabilir
+            _settingsService.Save(_settings);
+            ApplyUiLanguage();
         }
     }
 
@@ -1237,15 +1329,32 @@ public partial class MainWindow : Window
     private void RefreshDiagnosticsUi()
     {
         var s = _diagnostics.GetSummary();
-        DiagnosticsSummaryText.Text = s.SampleCount == 0
-            ? "Henüz ölçüm yok."
-            : $"Örnek: {s.SampleCount}/50 (Önbellek: {s.CacheHits}) | " +
-              $"Yakalama Ort/P95: {s.Capture.AverageMs}/{s.Capture.P95Ms} ms | " +
-              $"OCR: {s.Ocr.AverageMs}/{s.Ocr.P95Ms} ms | " +
-              $"1.Token: {s.FirstToken.AverageMs}/{s.FirstToken.P95Ms} ms | " +
-              $"Çeviri: {s.TotalTranslate.AverageMs}/{s.TotalTranslate.P95Ms} ms | " +
-              $"Gösterim: {s.Render.AverageMs}/{s.Render.P95Ms} ms | " +
-              $"Uçtan Uca: {s.EndToEnd.AverageMs}/{s.EndToEnd.P95Ms} ms";
+        if (s.SampleCount == 0)
+        {
+            DiagnosticsSummaryText.Text = IsEnglishUi ? "No measurements yet." : "Henüz ölçüm yok.";
+        }
+        else if (IsEnglishUi)
+        {
+            DiagnosticsSummaryText.Text =
+                $"Samples: {s.SampleCount}/50 (Cache Hits: {s.CacheHits}) | " +
+                $"Capture Avg/P95: {s.Capture.AverageMs}/{s.Capture.P95Ms} ms | " +
+                $"OCR: {s.Ocr.AverageMs}/{s.Ocr.P95Ms} ms | " +
+                $"1st Token: {s.FirstToken.AverageMs}/{s.FirstToken.P95Ms} ms | " +
+                $"Translate: {s.TotalTranslate.AverageMs}/{s.TotalTranslate.P95Ms} ms | " +
+                $"Render: {s.Render.AverageMs}/{s.Render.P95Ms} ms | " +
+                $"End-to-End: {s.EndToEnd.AverageMs}/{s.EndToEnd.P95Ms} ms";
+        }
+        else
+        {
+            DiagnosticsSummaryText.Text =
+                $"Örnek: {s.SampleCount}/50 (Önbellek: {s.CacheHits}) | " +
+                $"Yakalama Ort/P95: {s.Capture.AverageMs}/{s.Capture.P95Ms} ms | " +
+                $"OCR: {s.Ocr.AverageMs}/{s.Ocr.P95Ms} ms | " +
+                $"1.Token: {s.FirstToken.AverageMs}/{s.FirstToken.P95Ms} ms | " +
+                $"Çeviri: {s.TotalTranslate.AverageMs}/{s.TotalTranslate.P95Ms} ms | " +
+                $"Gösterim: {s.Render.AverageMs}/{s.Render.P95Ms} ms | " +
+                $"Uçtan Uca: {s.EndToEnd.AverageMs}/{s.EndToEnd.P95Ms} ms";
+        }
 
         DiagnosticsGrid.ItemsSource = _diagnostics.GetSnapshot().Reverse().ToList();
     }
@@ -1306,54 +1415,76 @@ public partial class MainWindow : Window
     private void RefreshPerformanceUi()
     {
         var snap = _perfMonitor.Sample(_llamaManager.ActiveProcessId, _llamaManager.ActiveBackendKey);
+        string appLabel = IsEnglishUi ? "bitiq (UI + OCR)" : "bitiq (Arayüz + OCR)";
+        string llamaOffLabel = IsEnglishUi ? "llama-server (Model): Off" : "llama-server (Model): Kapalı";
 
-        PerfTotalCpuText.Text = $"%{snap.TotalCpuPercent:0.0}";
+        PerfTotalCpuText.Text = IsEnglishUi ? $"{snap.TotalCpuPercent:0.0}%" : $"%{snap.TotalCpuPercent:0.0}";
         PerfCpuBar.Value = Math.Clamp(snap.TotalCpuPercent, 0, 100);
-        PerfAppCpuText.Text = $"bitiq (Arayüz + OCR): %{snap.AppCpuPercent:0.0}";
+        PerfAppCpuText.Text = IsEnglishUi
+            ? $"{appLabel}: {snap.AppCpuPercent:0.0}%"
+            : $"{appLabel}: %{snap.AppCpuPercent:0.0}";
         PerfLlamaCpuText.Text = snap.IsLlamaRunning
-            ? $"llama-server (PID {snap.LlamaPid}): %{snap.LlamaCpuPercent:0.0}"
-            : "llama-server (Model): Kapalı";
+            ? (IsEnglishUi
+                ? $"llama-server (PID {snap.LlamaPid}): {snap.LlamaCpuPercent:0.0}%"
+                : $"llama-server (PID {snap.LlamaPid}): %{snap.LlamaCpuPercent:0.0}")
+            : llamaOffLabel;
 
         PerfTotalRamText.Text = $"{snap.TotalRamMb:0} MB";
         PerfRamBar.Value = Math.Clamp(snap.TotalRamMb, 0, PerfRamBar.Maximum);
-        PerfAppRamText.Text = $"bitiq (Arayüz + OCR): {snap.AppRamMb:0} MB";
+        PerfAppRamText.Text = $"{appLabel}: {snap.AppRamMb:0} MB";
         PerfLlamaRamText.Text = snap.IsLlamaRunning
             ? $"llama-server (Model): {snap.LlamaRamMb:0} MB"
-            : "llama-server (Model): Kapalı";
+            : llamaOffLabel;
 
         if (snap.HasGpuMetrics)
         {
-            PerfGpuLoadText.Text = $"%{snap.GpuUtilizationPercent} GPU";
+            PerfGpuLoadText.Text = IsEnglishUi
+                ? $"{snap.GpuUtilizationPercent}% GPU"
+                : $"%{snap.GpuUtilizationPercent} GPU";
             PerfGpuBar.Value = Math.Clamp(snap.GpuUtilizationPercent, 0, 100);
             PerfGpuNameText.Text = snap.GpuName;
 
             if (snap.HasPerProcessVram)
             {
-                PerfVramDetailText.Text = $"Uygulama + Model VRAM: {snap.AppAndLlamaVramMb:0} MB\nToplam Kart VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB";
+                PerfVramDetailText.Text = IsEnglishUi
+                    ? $"App + Model VRAM: {snap.AppAndLlamaVramMb:0} MB\nTotal GPU VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB"
+                    : $"Uygulama + Model VRAM: {snap.AppAndLlamaVramMb:0} MB\nToplam Kart VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB";
             }
             else
             {
-                string gpuTag = snap.IsLlamaOnGpu ? "Model GPU'da aktif • " : string.Empty;
-                PerfVramDetailText.Text = $"{gpuTag}Toplam Kart VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB";
+                string gpuTag = snap.IsLlamaOnGpu
+                    ? (IsEnglishUi ? "Model active on GPU • " : "Model GPU'da aktif • ")
+                    : string.Empty;
+                PerfVramDetailText.Text = IsEnglishUi
+                    ? $"{gpuTag}Total GPU VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB"
+                    : $"{gpuTag}Toplam Kart VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB";
             }
         }
         else
         {
-            PerfGpuLoadText.Text = "Kullanılamıyor";
+            PerfGpuLoadText.Text = IsEnglishUi ? "Unavailable" : "Kullanılamıyor";
             PerfGpuBar.Value = 0;
-            PerfGpuNameText.Text = "NVIDIA NVML bulunamadı";
-            PerfVramDetailText.Text = "AMD/Intel GPU veya NVML sürücüsü yok; yalnızca CPU/RAM okunuyor.";
+            PerfGpuNameText.Text = IsEnglishUi ? "NVIDIA NVML not found" : "NVIDIA NVML bulunamadı";
+            PerfVramDetailText.Text = IsEnglishUi
+                ? "No NVIDIA NVML driver found; reporting CPU/RAM only."
+                : "AMD/Intel GPU veya NVML sürücüsü yok; yalnızca CPU/RAM okunuyor.";
         }
 
         if (snap.IsLlamaRunning)
         {
-            string backendLabel = string.IsNullOrWhiteSpace(snap.ActiveBackend) ? "bilinmiyor" : snap.ActiveBackend;
-            PerfEngineStatusText.Text = $"Durum: Aktif (PID {snap.LlamaPid} • Arka uç: {backendLabel}) — {_llamaManager.LastStatusMessage}";
+            string backendLabel = string.IsNullOrWhiteSpace(snap.ActiveBackend)
+                ? (IsEnglishUi ? "unknown" : "bilinmiyor")
+                : snap.ActiveBackend;
+            PerfEngineStatusText.Text = IsEnglishUi
+                ? $"Status: Active (PID {snap.LlamaPid} • Backend: {backendLabel}) — {_llamaManager.LastStatusMessage}"
+                : $"Durum: Aktif (PID {snap.LlamaPid} • Arka uç: {backendLabel}) — {_llamaManager.LastStatusMessage}";
             UnloadLlamaBtn.IsEnabled = !_isStartingOrSwitching;
         }
         else
         {
-            PerfEngineStatusText.Text = "Durum: Kapalı (RAM ve VRAM tüketmiyor)";
+            PerfEngineStatusText.Text = IsEnglishUi
+                ? "Status: Off (consuming zero RAM/VRAM)"
+                : "Durum: Kapalı (RAM ve VRAM tüketmiyor)";
             UnloadLlamaBtn.IsEnabled = false;
         }
     }
@@ -1379,6 +1510,509 @@ public partial class MainWindow : Window
         {
             _isStartingOrSwitching = false;
             RefreshPerformanceUi();
+        }
+    }
+
+    // ==================== DİL AYARLARI & ARAYÜZ DİLİ (TR / EN) ====================
+
+    private void UiLangTrBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.Equals(_settings.UiLanguage, "tr", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _settings.UiLanguage = "tr";
+        _settingsService.Save(_settings);
+        ApplyUiLanguage();
+    }
+
+    private void UiLangEnBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.Equals(_settings.UiLanguage, "en", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _settings.UiLanguage = "en";
+        _settingsService.Save(_settings);
+        ApplyUiLanguage();
+    }
+
+    private void RefreshLanguageCombos(string? pendingMissingLangCode = null)
+    {
+        bool en = IsEnglishUi;
+        var sourceItems = new List<SourceLanguageItem>(LanguageCatalog.SupportedLanguages.Count);
+        foreach (var lang in LanguageCatalog.SupportedLanguages)
+        {
+            bool installed = WindowsOcrService.IsLanguageOcrInstalled(lang.Code, out _);
+            sourceItems.Add(new SourceLanguageItem
+            {
+                Code = lang.Code,
+                DisplayName = LanguageCatalog.GetDisplayName(lang.Code, en),
+                IsInstalled = installed,
+                StatusText = installed
+                    ? (en ? "✓ Installed" : "✓ Kurulu")
+                    : (en ? "No OCR pack" : "Paketi yok"),
+                NameBrush = installed ? BrushInstalledName : BrushMissingName,
+                NameWeight = installed ? FontWeights.SemiBold : FontWeights.Normal,
+                StatusBrush = installed ? BrushInstalledStatus : BrushMissingStatus,
+                DownloadButtonText = en ? "⬇ Install" : "⬇ İndir",
+                DownloadTooltip = en
+                    ? $"Download & install Windows OCR language pack ({lang.OcrCapabilityTag})"
+                    : $"Windows OCR dil paketini indir ve kur ({lang.OcrCapabilityTag})",
+                DownloadButtonVisibility = installed ? Visibility.Collapsed : Visibility.Visible
+            });
+        }
+
+        var targetItems = LanguageCatalog.SupportedLanguages
+            .Select(lang => new TargetLanguageItem
+            {
+                Code = lang.Code,
+                DisplayName = LanguageCatalog.GetDisplayName(lang.Code, en)
+            })
+            .ToList();
+
+        string activeSrc = LanguageCatalog.GetByCode(_settings.SourceLanguage).Code;
+        string activeTgt = LanguageCatalog.GetByCode(_settings.TargetLanguage).Code;
+
+        _uiSuppressCount++;
+        try
+        {
+            SourceLangCombo.ItemsSource = sourceItems;
+            SourceLangCombo.SelectedItem = sourceItems.FirstOrDefault(x =>
+                    string.Equals(x.Code, activeSrc, StringComparison.OrdinalIgnoreCase))
+                ?? sourceItems.FirstOrDefault();
+
+            TargetLangCombo.ItemsSource = targetItems;
+            TargetLangCombo.SelectedItem = targetItems.FirstOrDefault(x =>
+                    string.Equals(x.Code, activeTgt, StringComparison.OrdinalIgnoreCase))
+                ?? targetItems.FirstOrDefault();
+        }
+        finally
+        {
+            _uiSuppressCount--;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pendingMissingLangCode))
+        {
+            var missing = LanguageCatalog.GetByCode(pendingMissingLangCode);
+            string missingName = LanguageCatalog.GetShortName(missing.Code, en);
+            QuickInstallOcrText.Text = en
+                ? $"⚠ Windows OCR pack for {missingName} is not installed."
+                : $"⚠ {missingName} için Windows OCR paketi kurulu değil.";
+            QuickInstallOcrBtn.Content = en
+                ? $"⬇ Download & Install {missingName} OCR"
+                : $"⬇ {missingName} OCR Paketini İndir ve Kur";
+            QuickInstallOcrBtn.Tag = missing.Code;
+            QuickInstallOcrPanel.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            QuickInstallOcrPanel.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void UpdateLanguagePairLabels()
+    {
+        bool en = IsEnglishUi;
+        string srcShort = LanguageCatalog.GetShortName(_settings.SourceLanguage, en);
+        string tgtShort = LanguageCatalog.GetShortName(_settings.TargetLanguage, en);
+
+        RegionSummaryHeaderText.Text = en
+            ? $"Selected Capture Region ({srcShort} → {tgtShort})"
+            : $"Seçili Yakalama Bölgesi ({srcShort} → {tgtShort})";
+        LiveSourceLabelText.Text = $"{srcShort} (OCR):";
+        LiveTargetLabelText.Text = en ? $"{tgtShort} (Translation):" : $"{tgtShort} (Çeviri):";
+    }
+
+    private void ApplySelectedSourceLanguage(string langCode)
+    {
+        string normalized = LanguageCatalog.GetByCode(langCode).Code;
+        if (!string.Equals(_settings.SourceLanguage, normalized, StringComparison.OrdinalIgnoreCase))
+        {
+            _settings.SourceLanguage = normalized;
+            _settingsService.Save(_settings);
+        }
+
+        var ocrRes = _ocrService.SetSourceLanguage(normalized);
+        _pipeline.ApplyLiveSettings(_settings);
+        CheckEnvironmentWarnings();
+        UpdateLanguagePairLabels();
+        QuickInstallOcrPanel.Visibility = Visibility.Collapsed;
+
+        if (ocrRes.IsAvailable)
+        {
+            SourceOcrPackInfoText.Foreground = BrushInfoMuted;
+            SourceOcrPackInfoText.Text = IsEnglishUi
+                ? $"Active OCR language: {LanguageCatalog.GetShortName(normalized, true)}. Languages marked '⬇ Install' become selectable once installed."
+                : $"Aktif OCR dili: {LanguageCatalog.GetShortName(normalized, false)}. Yanında '⬇ İndir' görünen diller kurulum bittiğinde aktif olur.";
+        }
+        else
+        {
+            SourceOcrPackInfoText.Foreground = BrushInfoWarn;
+            SourceOcrPackInfoText.Text = ocrRes.ErrorMessage;
+        }
+    }
+
+    private void SourceLangCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsUiSuppressed || SourceLangCombo.SelectedItem is not SourceLanguageItem item)
+            return;
+
+        if (!item.IsInstalled)
+        {
+            // Kurulu olmayan dil aktif seçime alınmaz; mevcut dile dönüp hızlı kurulum düğmesini göster
+            RefreshLanguageCombos(pendingMissingLangCode: item.Code);
+            SourceOcrPackInfoText.Foreground = BrushInfoWarn;
+            SourceOcrPackInfoText.Text = IsEnglishUi
+                ? $"'{item.DisplayName}' requires its Windows OCR pack before activation. Click '⬇ Install' next to it or below."
+                : $"'{item.DisplayName}' dilini aktif etmek için Windows OCR paketi kurulmalıdır. Sağdaki '⬇ İndir' veya aşağıdaki düğmeyle yükleyin.";
+            return;
+        }
+
+        ApplySelectedSourceLanguage(item.Code);
+    }
+
+    private void TargetLangCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsUiSuppressed || TargetLangCombo.SelectedItem is not TargetLanguageItem item)
+            return;
+
+        string normalized = LanguageCatalog.GetByCode(item.Code).Code;
+        if (string.Equals(_settings.TargetLanguage, normalized, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _settings.TargetLanguage = normalized;
+        _settingsService.Save(_settings);
+        _pipeline.ApplyLiveSettings(_settings);
+        UpdateLanguagePairLabels();
+    }
+
+    private void SwapLangsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isInstallingOcr)
+            return;
+
+        string newSource = LanguageCatalog.GetByCode(_settings.TargetLanguage).Code;
+        string newTarget = LanguageCatalog.GetByCode(_settings.SourceLanguage).Code;
+        if (string.Equals(newSource, newTarget, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        if (!WindowsOcrService.IsLanguageOcrInstalled(newSource, out _))
+        {
+            RefreshLanguageCombos(pendingMissingLangCode: newSource);
+            string newSrcName = LanguageCatalog.GetShortName(newSource, IsEnglishUi);
+            SourceOcrPackInfoText.Foreground = BrushInfoWarn;
+            SourceOcrPackInfoText.Text = IsEnglishUi
+                ? $"Cannot swap: Windows OCR pack for {newSrcName} is not installed yet. Install it first below."
+                : $"Diller değiştirilemedi: {newSrcName} için Windows OCR paketi henüz kurulu değil. Önce aşağıdan kurun.";
+            return;
+        }
+
+        _settings.SourceLanguage = newSource;
+        _settings.TargetLanguage = newTarget;
+        _settingsService.Save(_settings);
+
+        ApplySelectedSourceLanguage(newSource);
+        RefreshLanguageCombos();
+    }
+
+    private async void InstallOcrLangBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isInstallingOcr)
+            return;
+
+        if (sender is not FrameworkElement { Tag: string langCode } || string.IsNullOrWhiteSpace(langCode))
+            return;
+
+        SourceLangCombo.IsDropDownOpen = false;
+        var desc = LanguageCatalog.GetByCode(langCode);
+        string langName = LanguageCatalog.GetShortName(desc.Code, IsEnglishUi);
+
+        _isInstallingOcr = true;
+        SourceLangCombo.IsEnabled = false;
+        SwapLangsBtn.IsEnabled = false;
+        QuickInstallOcrBtn.IsEnabled = false;
+        OcrInstallProgressBar.Visibility = Visibility.Visible;
+        SourceOcrPackInfoText.Foreground = BrushInfoAccent;
+        SourceOcrPackInfoText.Text = IsEnglishUi
+            ? $"Installing Windows OCR pack for {langName}… Approve the UAC prompt if requested."
+            : $"{langName} Windows OCR paketi kuruluyor… Yönetici onayı penceresi çıkarsa onaylayın (15–60 sn sürebilir).";
+
+        try
+        {
+            var result = await WindowsOcrService.InstallOcrLanguagePackAsync(desc.Code, IsEnglishUi);
+            if (result.Success)
+            {
+                ApplySelectedSourceLanguage(desc.Code);
+                RefreshLanguageCombos();
+                SourceOcrPackInfoText.Foreground = BrushInfoOk;
+                SourceOcrPackInfoText.Text = $"✓ {result.Message}";
+                StatusDetailText.Text = result.Message;
+            }
+            else
+            {
+                RefreshLanguageCombos(pendingMissingLangCode: desc.Code);
+                SourceOcrPackInfoText.Foreground = BrushInfoErr;
+                SourceOcrPackInfoText.Text = $"⚠ {result.Message}";
+            }
+        }
+        finally
+        {
+            _isInstallingOcr = false;
+            SourceLangCombo.IsEnabled = true;
+            SwapLangsBtn.IsEnabled = true;
+            QuickInstallOcrBtn.IsEnabled = true;
+            OcrInstallProgressBar.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void ApplyUiLanguage()
+    {
+        bool en = IsEnglishUi;
+
+        // Toggle buton görünümü
+        UiLangTrBtn.Background = en ? Brushes.Transparent : new SolidColorBrush(Color.FromRgb(2, 132, 199));
+        UiLangTrBtn.Foreground = en ? new SolidColorBrush(Color.FromRgb(148, 163, 184)) : new SolidColorBrush(Color.FromRgb(248, 250, 252));
+        UiLangEnBtn.Background = en ? new SolidColorBrush(Color.FromRgb(2, 132, 199)) : Brushes.Transparent;
+        UiLangEnBtn.Foreground = en ? new SolidColorBrush(Color.FromRgb(248, 250, 252)) : new SolidColorBrush(Color.FromRgb(148, 163, 184));
+
+        // Sekme başlıkları
+        MainTabGeneral.Header = en ? "General" : "Genel";
+        MainTabStyle.Header = en ? "Appearance" : "Görünüm";
+        MainTabObs.Header = "OBS";
+        MainTabAdvanced.Header = en ? "Advanced" : "Gelişmiş";
+        PerformanceTab.Header = en ? "Performance" : "Performans";
+
+        // Üst durum & uyarı & eylem düğmeleri
+        ApplyPipelineStatusLabels(_currentPipelineState);
+        if (_currentPipelineState == PipelineState.Stopped &&
+            (StatusDetailText.Text.Contains("'Çevrilecek Alanı Seç'", StringComparison.Ordinal) ||
+             StatusDetailText.Text.Contains("'Select Region'", StringComparison.Ordinal)))
+        {
+            StatusDetailText.Text = en
+                ? "To start, click 'Select Region' and then press 'Start'."
+                : "Başlatmak için 'Çevrilecek Alanı Seç' ardından 'Başlat'a basın.";
+        }
+
+        OverlapWarningText.Text = en
+            ? "⚠ Warning: The subtitle overlay overlaps the OCR capture region! Move the overlay with 'Reposition' or pick a different capture box so the app doesn't read its own translation."
+            : "⚠ Uyarı: Altyazı penceresi OCR yakalama bölgesiyle çakışıyor! Uygulamanın kendi çevirisini okumaması için altyazı katmanını 'Konumlandır' ile taşıyın veya başka bir bölge seçin.";
+
+        SelectRegionBtn.Content = en ? "🎯  Select Region" : "🎯  Çevrilecek Alanı Seç";
+        PositionOverlayBtn.Content = en ? "✥  Reposition Overlay" : "✥  Altyazıyı Konumlandır";
+        OpenTestWindowBtn.Content = en ? "🎬  Open Test Window" : "🎬  Test Penceresi Aç";
+        SyncScreenOverlayControls(_settings.ShowScreenOverlay);
+
+        // Sekme 1: Genel
+        EngineSelectorHeaderText.Text = en ? "Translation Engine Selection" : "Çeviri Motoru Seçimi";
+        EngineLocalTitleText.Text = en ? "Local (TranslateGemma): offline, more natural" : "Yerel (TranslateGemma): internetsiz, daha doğal";
+        EngineLocalDescText.Text = en
+            ? "Runs on NVIDIA RTX GPU. Downloads llama.cpp and TranslateGemma 4B on first use."
+            : "RTX GPU üzerinde çalışır. İlk seferde llama.cpp ve TranslateGemma 4B indirilir.";
+        EngineGoogleTitleText.Text = en ? "Google Translate: lightweight & fast" : "Google Translate: hafif ve hızlı";
+        EngineGoogleDescText.Text = en
+            ? "Uses zero VRAM and minimal RAM. Unloads the local model immediately when selected."
+            : "Ekran kartı ve bellek kullanmaz. Seçildiğinde yerel model VRAM/RAM'den tamamen boşaltılır.";
+
+        LangSettingsHeaderText.Text = en ? "🌐 Language Settings (On-Screen Language → Translation)" : "🌐 Dil Ayarları (Ekrandaki Dil → Çeviri Dili)";
+        SourceLangLabelText.Text = en ? "On-Screen Language (OCR):" : "Ekrandaki Dil (OCR):";
+        TargetLangLabelText.Text = en ? "Translate To (Subtitles):" : "Çevrilecek Dil (Altyazı):";
+        SwapLangsBtn.ToolTip = en ? "Swap languages" : "Dilleri değiştir";
+
+        CaptureSourceHeaderText.Text = en ? "🎯 Capture Source (Screen or Window Lock)" : "🎯 Yakalama Kaynağı (Ekran veya Pencereye Kilitle)";
+        RefreshWindowsBtn.Content = en ? "🔄 Refresh" : "🔄 Yenile";
+        CaptureSourceHintText.Text = en
+            ? "💡 Tip: Choose a window and click 'Select Region' to lock capture strictly to that window. Even if overlays or other windows cover it, only the locked window is captured."
+            : "💡 İpucu: Bir pencere seçip 'Çevrilecek Alanı Seç' derseniz yakalama ve çeviri o pencereye kilitlenir. Üstüne başka bir pencere veya altyazı kutusu gelse bile yalnızca seçilen pencere yakalanır.";
+
+        ShowScreenOverlayMainCheck.Content = en
+            ? "Show transparent on-screen subtitle overlay (turn off to send only to OBS source)"
+            : "Ekranda şeffaf altyazı kutusunu göster (kapatılırsa yalnızca OBS kaynağına gönderilir)";
+        MergeIncompleteCheck.Content = en
+            ? "Merge incomplete sentences before translating (append next line if no terminal punctuation)"
+            : "Bitmemiş cümleleri birleştirerek çevir (nokta ile bitmeyen altyazılara sonraki satırı ekle)";
+        StreamingMainCheck.Content = en
+            ? "Stream text with typewriter effect (turn off to display full translation at once)"
+            : "Yazıyı daktilo (typewriter) efektiyle akışlı göster (kapatılırsa cümle tek seferde anında görünür)";
+        LivePanelHeaderText.Text = en ? "Live Detected & Translated Text" : "Canlı Algılanan & Çevrilen Metin";
+
+        // Sekme 2: Görünüm
+        StyleLivePreviewLabel.Text = en ? "LIVE PREVIEW" : "CANLI ÖNİZLEME";
+        PresetLabelText.Text = en ? "Preset Style:" : "Hazır Stil:";
+        SaveProfileBtn.Content = en ? "Save" : "Kaydet";
+        SaveAsProfileBtn.Content = en ? "Save As" : "Farklı Kaydet";
+        RenameProfileBtn.Content = en ? "Rename" : "Yeniden Adlandır";
+        DeleteProfileBtn.Content = en ? "Delete" : "Sil";
+        ExportJsonBtn.Content = en ? "Export JSON" : "JSON Dışa Aktar";
+        ImportJsonBtn.Content = en ? "Import JSON" : "JSON İçe Aktar";
+        BasicStyleHeaderText.Text = en ? "Basic Style Settings (Live Preview)" : "Temel Stil Ayarları (Anında Yansır)";
+        FontFamilyLabelText.Text = en ? "1. Font Family (Search & Pick)" : "1. Yazı Tipi (Ara ve Seç)";
+        FontSearchBox.ToolTip = en ? "Search fonts" : "Yazı tipi ara";
+        TextColorLabelText.Text = en ? "3. Text Color" : "3. Yazı Rengi";
+        BgColorLabelText.Text = en ? "4. Background Color" : "4. Arka Plan Rengi";
+        PositionLabelText.Text = en ? "6. Position" : "6. Konum";
+        AdvancedStyleExpander.Header = en
+            ? "Advanced Style (Outline, Shadow, Background Mode, Layout, Behavior, Original Text)"
+            : "Gelişmiş Stil (Kontur, Gölge, Arka Plan Modu, Yerleşim, Davranış, Orijinal Metin)";
+        StyleFontDetailsHeaderText.Text = en ? "Typography" : "Yazı Ayrıntıları";
+        FontWeightLabelText.Text = en ? "Weight" : "Kalınlık";
+        TextAlignLabelText.Text = en ? "Alignment" : "Hizalama";
+        ItalicCheck.Content = en ? "Italic" : "İtalik";
+        UppercaseCheck.Content = en ? "UPPERCASE" : "BÜYÜK HARF";
+        StyleColorOutlineHeaderText.Text = en ? "Color, Outline & Shadow" : "Renk, Kontur ve Gölge";
+        OutlineColorLabelText.Text = en ? "Outline Color" : "Kontur Rengi";
+        ShadowColorLabelText.Text = en ? "Shadow Color" : "Gölge Rengi";
+        StyleBgBorderHeaderText.Text = en ? "Background & Border" : "Arka Plan ve Kenarlık";
+        BgModeLabelText.Text = en ? "Background Mode" : "Arka Plan Modu";
+        BorderColorLabelText.Text = en ? "Border Color" : "Kenarlık Rengi";
+        StyleLayoutHeaderText.Text = en ? "Layout & Overflow" : "Yerleşim ve Taşma";
+        OverflowLabelText.Text = en ? "Overflow Mode" : "Taşma Modu";
+        StyleBehaviorHeaderText.Text = en ? "Behavior & Original Text" : "Davranış ve Orijinal Metin";
+        AnimLabelText.Text = en ? "Animation" : "Animasyon";
+        ShowOriginalCheck.Content = en ? "Show original source text in a smaller secondary line" : "Orijinal kaynak metni küçük ve ayrı stille göster";
+        OrigColorLabelText.Text = en ? "Original Color" : "Orijinal Renk";
+        OrigItalicCheck.Content = en ? "Original Italic" : "Orijinal İtalik";
+
+        LocalizeComboItems(PositionPresetCombo, en
+            ? new Dictionary<string, string> { ["BottomCenter"] = "Bottom Center", ["TopCenter"] = "Top Center", ["Center"] = "Center", ["BottomLeft"] = "Bottom Left", ["BottomRight"] = "Bottom Right", ["TopLeft"] = "Top Left", ["TopRight"] = "Top Right" }
+            : new Dictionary<string, string> { ["BottomCenter"] = "Alt Orta", ["TopCenter"] = "Üst Orta", ["Center"] = "Orta", ["BottomLeft"] = "Alt Sol", ["BottomRight"] = "Alt Sağ", ["TopLeft"] = "Üst Sol", ["TopRight"] = "Üst Sağ" });
+        LocalizeComboItems(FontWeightCombo, en
+            ? new Dictionary<string, string> { ["300"] = "Light (300)", ["400"] = "Regular (400)", ["500"] = "Medium (500)", ["600"] = "SemiBold (600)", ["700"] = "Bold (700)", ["800"] = "ExtraBold (800)", ["900"] = "Black (900)" }
+            : new Dictionary<string, string> { ["300"] = "İnce (300)", ["400"] = "Normal (400)", ["500"] = "Orta (500)", ["600"] = "Yarı Kalın (600)", ["700"] = "Kalın (700)", ["800"] = "Çok Kalın (800)", ["900"] = "Siyah (900)" });
+        LocalizeComboItems(TextAlignCombo, en
+            ? new Dictionary<string, string> { ["Center"] = "Center", ["Left"] = "Left", ["Right"] = "Right" }
+            : new Dictionary<string, string> { ["Center"] = "Orta", ["Left"] = "Sol", ["Right"] = "Sağ" });
+        LocalizeComboItems(BgModeCombo, en
+            ? new Dictionary<string, string> { ["None"] = "None", ["PerLineBox"] = "Per-Line Box", ["SingleBlock"] = "Single Block", ["FullWidthBar"] = "Full-Width Bar" }
+            : new Dictionary<string, string> { ["None"] = "Kapalı", ["PerLineBox"] = "Satır Başına Kutu", ["SingleBlock"] = "Tek Blok", ["FullWidthBar"] = "Tam Genişlik Şerit" });
+        LocalizeComboItems(OverflowCombo, en
+            ? new Dictionary<string, string> { ["ShrinkToFit"] = "Shrink to Fit", ["Clip"] = "Clip" }
+            : new Dictionary<string, string> { ["ShrinkToFit"] = "Küçült", ["Clip"] = "Kes" });
+        LocalizeComboItems(AnimTypeCombo, en
+            ? new Dictionary<string, string> { ["None"] = "None", ["Fade"] = "Fade", ["Slide"] = "Slide" }
+            : new Dictionary<string, string> { ["None"] = "Yok", ["Fade"] = "Solma", ["Slide"] = "Kayma" });
+
+        // Sekme 3: OBS
+        ObsPrimaryHeaderText.Text = en
+            ? "Primary Method: OBS Browser Source (Transparent Background, Live SSE)"
+            : "Birincil Yöntem: OBS Tarayıcı Kaynağı (Şeffaf Arka Plan, Anlık SSE)";
+        CopyObsUrlBtn.Content = en ? "Copy" : "Kopyala";
+        OpenObsBrowserBtn.Content = en ? "Open in Browser" : "Tarayıcıda Aç";
+        ObsSetupTitleText.Text = en ? "OBS Setup in 4 Steps:" : "4 Adımda OBS Kurulumu:";
+        ObsSetupStepsText.Text = en
+            ? "1. In OBS Studio Sources, click '+' (Add Source).\n2. Choose 'Browser' and click 'OK'.\n3. Paste the URL above into the URL field.\n4. Match Width / Height to your OBS canvas size (e.g. 1920 × 1080)."
+            : "1. OBS Studio'da Kaynaklar bölümünden '+' (Kaynak Ekle) düğmesine basın.\n2. 'Tarayıcı' (Browser) kaynağını seçip 'Tamam' deyin.\n3. URL kutusuna yukarıdaki adresi yapıştırın.\n4. Genişlik / Yükseklik değerlerini OBS yayın tuvalinizin boyutuyla aynı yapın (ör. 1920 × 1080).";
+        ObsSetupTipText.Text = en
+            ? "Tip: If capture card video lags behind subtitles, add a 'Render Delay' filter to your video source in OBS."
+            : "İpucu: Capture card gecikmesi nedeniyle görüntü altyazıdan geç geliyorsa OBS'te video yakalama kaynağınıza 'Render Delay' (İşleme Gecikmesi) filtresi ekleyebilirsiniz.";
+        ObsScreenMonitorHeaderText.Text = en
+            ? "On-Screen Overlay (For Viewing on Your Own Monitor)"
+            : "Ekran Altyazısı (Kendi Monitörünüzde İzleme İçin)";
+        ShowScreenOverlayCheck.Content = en
+            ? "Show transparent on-screen subtitle overlay (clicks pass through to the game)"
+            : "Ekranda şeffaf altyazı katmanını göster (tıklamalar oyuna geçer)";
+        ObsChromaHeaderText.Text = en
+            ? "Fallback Method: OBS Window (Window Capture + Chroma Key)"
+            : "Yedek Yöntem: OBS Penceresi (Pencere Yakalama + Chroma Key)";
+        ShowChromaWindowCheck.Content = en
+            ? "Open solid-color OBS Chroma Key window"
+            : "Düz renkli OBS Chroma Key penceresini aç";
+        ObsChromaColorLabelText.Text = en ? "Chroma Background Color:" : "Chroma Arka Plan Rengi:";
+
+        // Sekme 4: Gelişmiş & Tanı
+        AdvLocalHeaderText.Text = en ? "Local Model & Latency Settings" : "Yerel Model ve Gecikme Ayarları";
+        AdvQuantLabelText.Text = en ? "Model Quantization (Quality ↔ Speed)" : "Model Niceleme (Kalite ↔ Hız)";
+        AdvBackendLabelText.Text = en ? "GPU / Backend" : "GPU / Arka Uç";
+        AdvStabilityLabelText.Text = en ? "Speed ↔ Stability (Frames)" : "Hız ↔ Kararlılık (Kare)";
+        AdvThreadsLabelText.Text = en ? "CPU Thread Count" : "CPU Thread Sayısı";
+        LocalizeComboItems(QuantSelectionCombo, en
+            ? new Dictionary<string, string> { ["Q8_0"] = "Q8_0 (~3.85 GB — High Quality, Default)", ["Q4_K_M"] = "Q4_K_M (~2.32 GB — Faster & Lighter)" }
+            : new Dictionary<string, string> { ["Q8_0"] = "Q8_0 (~3.85 GB — Yüksek Kalite, Varsayılan)", ["Q4_K_M"] = "Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)" });
+        LocalizeComboItems(BackendCombo, en
+            ? new Dictionary<string, string> { ["Auto"] = "Auto (CUDA → Vulkan → CPU)", ["Cuda"] = "CUDA", ["Vulkan"] = "Vulkan (Fallback)", ["Cpu"] = "CPU (Fallback)" }
+            : new Dictionary<string, string> { ["Auto"] = "Otomatik (CUDA → Vulkan → CPU)", ["Cuda"] = "CUDA", ["Vulkan"] = "Vulkan (Yedek)", ["Cpu"] = "CPU (Yedek)" });
+        LocalizeComboItems(StabilityFramesCombo, en
+            ? new Dictionary<string, string> { ["1"] = "1 Frame (Fastest)", ["2"] = "2 Frames (Balanced)", ["3"] = "3 Frames (Most Stable)" }
+            : new Dictionary<string, string> { ["1"] = "1 Kare (En Hızlı)", ["2"] = "2 Kare (Dengeli)", ["3"] = "3 Kare (En Kararlı)" });
+
+        StreamingCheck.Content = en ? "Stream text with typewriter effect" : "Daktilo (typewriter) efektiyle akışlı göster";
+        PreprocessCheck.Content = en ? "Smart Background Cleanup (recommended for outline-less subtitles)" : "Akıllı Arka Plan Temizleme (Arka plansız altyazılar için önerilen)";
+        MergeIncompleteAdvCheck.Content = en ? "Merge incomplete sentences before translating" : "Bitmemiş cümleleri birleştirerek çevir";
+        OpenWizardBtn.Content = en ? "Open Setup Wizard" : "Kurulum Sihirbazını Aç";
+        OpenDataFolderBtn.Content = en ? "Open Settings & Model Folder" : "Ayar & Model Klasörünü Aç";
+        DiagHeaderText.Text = en ? "Diagnostics (Last 50 Lines Avg & P95)" : "Tanı (Son 50 Satır Ortalama ve P95 Süreleri)";
+        ClearDiagnosticsBtn.Content = en ? "Clear" : "Temizle";
+
+        ColDiagEngine.Header = en ? "Engine" : "Motor";
+        ColDiagSource.Header = en ? "Source" : "Kaynak";
+        ColDiagCache.Header = en ? "Cache" : "Önbellek";
+        ColDiagCapture.Header = en ? "Capture (ms)" : "Yakalama (ms)";
+        ColDiagOcr.Header = "OCR (ms)";
+        ColDiagFirstToken.Header = en ? "1st Token (ms)" : "1. Token (ms)";
+        ColDiagTranslate.Header = en ? "Translate (ms)" : "Çeviri (ms)";
+        ColDiagRender.Header = en ? "Render (ms)" : "Gösterim (ms)";
+        ColDiagTotal.Header = en ? "Total (ms)" : "Toplam (ms)";
+
+        // Sekme 5: Performans
+        PerfNoticeText.Text = en
+            ? "ℹ Zero Background Overhead: Metrics are sampled every 1.5s from in-process Windows & NVML APIs ONLY while this Performance tab is visible. Switching away stops the timer completely (0% extra CPU)."
+            : "ℹ Sıfır Arka Plan Yükü: Ölçümler yalnızca bu 'Performans' sekmesi açıkken her 1.5 saniyede bir doğrudan süreç içi (in-process) Windows & NVML API'lerinden okunur. Başka sekmeye geçildiğinde ölçüm zamanlayıcısı tamamen durdurulur (%0 ekstra CPU).";
+        PerfCpuCardHeaderText.Text = en ? "CPU Usage" : "CPU Kullanımı";
+        PerfRamCardHeaderText.Text = en ? "RAM (Memory) Usage" : "RAM (Bellek) Kullanımı";
+        PerfGpuCardHeaderText.Text = en ? "GPU & VRAM Usage" : "GPU & VRAM Kullanımı";
+        PerfLlamaStatusHeaderText.Text = en ? "Local Model Process Status (llama-server)" : "Yerel Model Süreç Durumu (llama-server)";
+        UnloadLlamaBtn.Content = en ? "🧹 Unload Local Model from Memory" : "🧹 Yerel Modeli Bellekten Boşalt";
+
+        // Dinamik içerikler
+        UpdateStyleSliderLabels(_settings.ActiveStyle);
+        UpdateDebounceLabel();
+        RefreshLanguageCombos();
+        UpdateLanguagePairLabels();
+        if (!_isInstallingOcr)
+        {
+            SourceOcrPackInfoText.Foreground = BrushInfoMuted;
+            SourceOcrPackInfoText.Text = en
+                ? $"Active OCR language: {LanguageCatalog.GetShortName(_settings.SourceLanguage, true)}. Languages marked '⬇ Install' become selectable once Windows installs the OCR pack."
+                : $"Aktif OCR dili: {LanguageCatalog.GetShortName(_settings.SourceLanguage, false)}. Yanında '⬇ İndir' görünen diller Windows OCR paketi kurulduktan sonra aktif olur.";
+        }
+        RefreshCaptureTargetList();
+        UpdateRegionSummary();
+        CheckEnvironmentWarnings();
+        RefreshDiagnosticsUi();
+
+        if (Equals(MainTabs.SelectedItem, PerformanceTab))
+        {
+            RefreshPerformanceUi();
+        }
+        else
+        {
+            PerfAppCpuText.Text = en ? "bitiq (UI + OCR): 0.0%" : "bitiq (Arayüz + OCR): %0.0";
+            PerfLlamaCpuText.Text = en ? "llama-server (Model): Off" : "llama-server (Model): Kapalı";
+            PerfAppRamText.Text = en ? "bitiq (UI + OCR): 0 MB" : "bitiq (Arayüz + OCR): 0 MB";
+            PerfLlamaRamText.Text = en ? "llama-server (Model): Off" : "llama-server (Model): Kapalı";
+            PerfEngineStatusText.Text = en ? "Status: Off (consuming zero RAM/VRAM)" : "Durum: Kapalı (RAM ve VRAM tüketmiyor)";
+        }
+    }
+
+    private void LocalizeComboItems(ComboBox combo, IReadOnlyDictionary<string, string> labelsByTag)
+    {
+        _uiSuppressCount++;
+        try
+        {
+            int selectedIdx = combo.SelectedIndex;
+            foreach (var item in combo.Items.OfType<ComboBoxItem>())
+            {
+                string tag = item.Tag?.ToString() ?? string.Empty;
+                if (labelsByTag.TryGetValue(tag, out string? label))
+                    item.Content = label;
+            }
+            if (selectedIdx >= 0)
+            {
+                combo.SelectedIndex = -1;
+                combo.SelectedIndex = selectedIdx;
+            }
+        }
+        finally
+        {
+            _uiSuppressCount--;
         }
     }
 

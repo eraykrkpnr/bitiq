@@ -19,13 +19,13 @@ public readonly record struct StabilizerDecision(StabilizerAction Action, string
 /// </summary>
 public sealed partial class SubtitleStabilizer
 {
-    private const int RequiredEmptyFrames = 4;
-    private const int MinEmptyDurationMs = 320;
-    private const int LingerReuseWindowMs = 3000;
+    public static volatile bool IsEnglishSourceMode = true;
 
     private readonly double _similarityThreshold;
     private int _requiredFrames;
     private int _debounceMs;
+    private int _requiredEmptyFrames;
+    private int _minEmptyDurationMs;
 
     private string _candidateText = string.Empty;
     private string _candidateNormalized = string.Empty;
@@ -46,17 +46,26 @@ public sealed partial class SubtitleStabilizer
     private int _emptyFrameCount;
     private long _emptySinceMs;
 
-    public SubtitleStabilizer(int requiredFrames = 1, int debounceMs = 0, double similarityThreshold = 0.90)
+    public SubtitleStabilizer(
+        int requiredFrames = 1,
+        int debounceMs = 0,
+        double similarityThreshold = 0.90,
+        int requiredEmptyFrames = 1,
+        int minEmptyDurationMs = 0)
     {
         _requiredFrames = Math.Clamp(requiredFrames, 1, 3);
         _debounceMs = Math.Clamp(debounceMs, 0, 2000);
         _similarityThreshold = Math.Clamp(similarityThreshold, 0.5, 1.0);
+        _requiredEmptyFrames = Math.Max(1, requiredEmptyFrames);
+        _minEmptyDurationMs = Math.Max(0, minEmptyDurationMs);
     }
 
     public void Configure(int requiredFrames, int debounceMs)
     {
         _requiredFrames = Math.Clamp(requiredFrames, 1, 3);
         _debounceMs = Math.Clamp(debounceMs, 0, 2000);
+        _requiredEmptyFrames = Math.Max(2, _requiredFrames);
+        _minEmptyDurationMs = 150;
     }
 
     public void Reset()
@@ -93,7 +102,7 @@ public sealed partial class SubtitleStabilizer
                 _emptyFrameCount++;
 
                 // Tek karelik boş okuma veya kısa sahne parlamasında mevcut altyazıyı unutma
-                if (_emptyFrameCount < RequiredEmptyFrames || (nowMs - _emptySinceMs) < MinEmptyDurationMs)
+                if (_emptyFrameCount < _requiredEmptyFrames || (nowMs - _emptySinceMs) < _minEmptyDurationMs)
                 {
                     return new StabilizerDecision(StabilizerAction.None, string.Empty, string.Empty);
                 }
@@ -144,7 +153,9 @@ public sealed partial class SubtitleStabilizer
                     _upgradeCandidateCount = 1;
                 }
 
-                if (_upgradeCandidateCount >= 2)
+                ComputeWordQuality(cleaned, out int upClean, out int upGarbage, out _);
+                int requiredUpgradeFrames = (upGarbage == 0 && upClean >= 2) ? 1 : 2;
+                if (_upgradeCandidateCount >= requiredUpgradeFrames)
                 {
                     _lastCommittedText = cleaned;
                     _lastCommittedNormalized = normalized;
@@ -171,9 +182,11 @@ public sealed partial class SubtitleStabilizer
         }
 
         // Linger süresi içinde veya henüz temizlenmişken aynı cümle (veya alt satırı) geri geldiyse yeniden çevirme
+        // Kısa ünlemler ("Wooo!", "No!") ardışık tekrarda yutulmasın diye 450 ms ile sınırla
+        int reuseWindowMs = normalized.Length <= 6 ? 450 : 1500;
         if (!_hasActiveSubtitle
             && !string.IsNullOrEmpty(_lastDisplayedNormalized)
-            && (nowMs - _lastClearedMs) <= LingerReuseWindowMs
+            && (nowMs - _lastClearedMs) <= reuseWindowMs
             && IsCoveredByActiveSubtitle(_lastDisplayedNormalized, _lastDisplayedLinesNormalized, normalized))
         {
             _hasActiveSubtitle = true;
@@ -226,10 +239,22 @@ public sealed partial class SubtitleStabilizer
 
     private StabilizerDecision TryCommit(long nowMs)
     {
-        // Ekranda zaten aktif altyazı varken yeni altyazıya geçişte crossfade'in 1. karesini atla
-        int effectiveRequired = _hasActiveSubtitle
-            ? Math.Max(_requiredFrames, 2)
-            : _requiredFrames;
+        int effectiveRequired = _requiredFrames;
+        ComputeWordQuality(_candidateText, out int candClean, out int candGarbage, out _);
+        bool hasTerminalPunctuation = EndsWithSentencePunctuation(_candidateText);
+
+        // Tek karelik <=3 karakter noktalama işaretsiz parçacıkları ("Wi") doğrulanana kadar beklet;
+        // temiz yeni cümleleri ise aktif altyazı varken bile geciktirme.
+        if (candClean <= 1 && candGarbage == 0 && !hasTerminalPunctuation && _candidateNormalized.Length <= 3)
+        {
+            effectiveRequired = Math.Max(effectiveRequired, 2);
+        }
+        else if (_hasActiveSubtitle && _requiredFrames == 1)
+        {
+            bool isCleanNewSubtitle = candGarbage == 0 && (candClean >= 2 || (candClean == 1 && hasTerminalPunctuation));
+            if (!isCleanNewSubtitle)
+                effectiveRequired = 2;
+        }
 
         if (_candidateCount < effectiveRequired)
             return new StabilizerDecision(StabilizerAction.None, string.Empty, string.Empty);
@@ -280,9 +305,25 @@ public sealed partial class SubtitleStabilizer
                     return true;
                 }
             }
+
+            if (ComputeWordSubsetCoverage(candidateNormalized, activeNormalized, out int shortWordCount, out int matchedWords) >= 0.65
+                && shortWordCount >= 2
+                && matchedWords >= 2)
+            {
+                return true;
+            }
         }
 
         return false;
+    }
+
+    private static bool EndsWithSentencePunctuation(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        string trimmed = text.TrimEnd(' ', '\t', '"', '\'', '\u2019', '\u201D', ')');
+        return trimmed.Length > 0 && trimmed[^1] is '.' or '!' or '?' or '\u2026';
     }
 
     private static string[] ExtractNormalizedLines(string text)
@@ -367,6 +408,18 @@ public sealed partial class SubtitleStabilizer
                 return true;
         }
 
+        if (minLen >= 10)
+        {
+            string shorter = a.Length <= b.Length ? a : b;
+            string longer = a.Length > b.Length ? a : b;
+            double subsetCov = ComputeWordSubsetCoverage(shorter, longer, out int shortWordCount, out int matchedWords);
+            if (minLen >= (int)(maxLen * 0.50) && shortWordCount >= 3 && matchedWords >= 3 && subsetCov >= 0.72)
+                return true;
+
+            if (shortWordCount >= 3 && matchedWords == shortWordCount && subsetCov >= 0.99 && longer.Contains(shorter, StringComparison.Ordinal))
+                return true;
+        }
+
         // Üçlü harf (trigram) örtüşmesi ile kısa OCR bozulmalarını tolere et
         if (ComputeTrigramSimilarity(a, b) >= 0.74 && sim >= 0.72)
             return true;
@@ -376,16 +429,48 @@ public sealed partial class SubtitleStabilizer
 
     private static double ComputeWordSimilarity(string a, string b)
     {
-        var wordsA = a.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Where(w => w.Length >= 3)
-            .ToList();
-        var wordsB = b.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Where(w => w.Length >= 3)
-            .ToList();
+        var wordsA = ExtractSignificantWords(a);
+        var wordsB = ExtractSignificantWords(b);
 
         if (wordsA.Count < 2 || wordsB.Count < 2)
             return 0.0;
 
+        int matched = CountMatchedWords(wordsA, wordsB);
+        return (double)matched / Math.Max(wordsA.Count, wordsB.Count);
+    }
+
+    private static double ComputeWordSubsetCoverage(
+        string shorterNorm,
+        string longerNorm,
+        out int shorterWordCount,
+        out int matchedWords)
+    {
+        var shortWords = ExtractSignificantWords(shorterNorm);
+        shorterWordCount = shortWords.Count;
+        if (shorterWordCount == 0)
+        {
+            matchedWords = 0;
+            return 0.0;
+        }
+
+        var longWords = ExtractSignificantWords(longerNorm);
+        if (longWords.Count == 0)
+        {
+            matchedWords = 0;
+            return 0.0;
+        }
+
+        matchedWords = CountMatchedWords(shortWords, longWords);
+        return (double)matchedWords / shorterWordCount;
+    }
+
+    private static List<string> ExtractSignificantWords(string normalizedText)
+        => normalizedText.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length >= 3)
+            .ToList();
+
+    private static int CountMatchedWords(List<string> wordsA, List<string> wordsB)
+    {
         var usedB = new bool[wordsB.Count];
         int matched = 0;
 
@@ -409,7 +494,7 @@ public sealed partial class SubtitleStabilizer
             }
         }
 
-        return (double)matched / Math.Max(wordsA.Count, wordsB.Count);
+        return matched;
     }
 
     public static string CleanRawText(string? input)
@@ -440,7 +525,7 @@ public sealed partial class SubtitleStabilizer
             }
 
             // "-11.", ".", "t." gibi arka plan kırpıntısı çöp satırları ele
-            if (letterCount < 2)
+            if (letterCount < 2 && (IsEnglishSourceMode || !line.Any(c => c >= '\u2E80')))
                 continue;
 
             line = InWordDigitNoiseRegex().Replace(line, m =>
@@ -482,6 +567,12 @@ public sealed partial class SubtitleStabilizer
 
     public static void ComputeWordQuality(string? text, out int cleanWords, out int garbageWords, out int totalTokens)
     {
+        if (!IsEnglishSourceMode)
+        {
+            ComputeWordQualityMultilingual(text, out cleanWords, out garbageWords, out totalTokens);
+            return;
+        }
+
         cleanWords = 0;
         garbageWords = 0;
         totalTokens = 0;
@@ -617,6 +708,9 @@ public sealed partial class SubtitleStabilizer
 
     public static string NormalizeForComparison(string? input)
     {
+        if (!IsEnglishSourceMode)
+            return NormalizeForComparisonMultilingual(input);
+
         if (string.IsNullOrWhiteSpace(input))
             return string.Empty;
 
@@ -673,6 +767,136 @@ public sealed partial class SubtitleStabilizer
                 }
             }
             sb.Append(c);
+        }
+
+        return sb.ToString().Trim();
+    }
+
+    private static void ComputeWordQualityMultilingual(string? text, out int cleanWords, out int garbageWords, out int totalTokens)
+    {
+        cleanWords = 0;
+        garbageWords = 0;
+        totalTokens = 0;
+
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        var rawTokens = text.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        foreach (string rawToken in rawTokens)
+        {
+            string w = rawToken.Trim('.', ',', '!', '?', ':', ';', '\'', '"', '\u2018', '\u2019', '\u201C', '\u201D', '(', ')', '[', ']', '-', '\u2014', '\u2013', '\u2026', '。', '、', '！', '？', '「', '」', '《', '》', '¿', '¡', '،', '؟');
+            if (w.Length == 0)
+            {
+                if (rawToken.Any(c => c is not ('.' or '-' or '\u2014' or '\u2013' or '\u2026' or ',' or '!' or '?' or '。' or '、' or '！' or '？')))
+                {
+                    totalTokens++;
+                    garbageWords++;
+                }
+                continue;
+            }
+
+            totalTokens++;
+            int letters = 0;
+            int digits = 0;
+            bool hasInternalSymbol = false;
+            bool hasVowel = false;
+            bool hasNonLatin = false;
+            bool hasCjk = false;
+
+            foreach (char ch in w)
+            {
+                if (char.IsLetter(ch))
+                {
+                    letters++;
+                    if (ch > '\u024F')
+                    {
+                        hasNonLatin = true;
+                        if (ch >= '\u2E80')
+                            hasCjk = true;
+                    }
+                    else
+                    {
+                        char lower = char.ToLowerInvariant(ch);
+                        if (lower is 'a' or 'e' or 'i' or 'o' or 'u' or 'y' or '\u0131'
+                            or 'ä' or 'ö' or 'ü' or 'å' or 'é' or 'á' or 'ó' or 'ú' or 'í'
+                            or 'à' or 'è' or 'ì' or 'ò' or 'ù' or 'â' or 'ê' or 'î' or 'ô' or 'û' or 'ã' or 'õ')
+                        {
+                            hasVowel = true;
+                        }
+                    }
+                }
+                else if (char.IsDigit(ch))
+                {
+                    digits++;
+                }
+                else if (ch is not ('\'' or '\u2019' or '-'))
+                {
+                    hasInternalSymbol = true;
+                }
+            }
+
+            if (hasInternalSymbol)
+            {
+                garbageWords++;
+                continue;
+            }
+
+            if (hasNonLatin)
+            {
+                if (letters >= 2 || hasCjk)
+                    cleanWords++;
+                else
+                    garbageWords++;
+                continue;
+            }
+
+            if (digits > 0 && letters == 0)
+            {
+                cleanWords++;
+                continue;
+            }
+
+            bool vowellessLongWord = digits == 0 && letters >= 5 && !hasVowel;
+            if (vowellessLongWord || (digits > 0 && letters > 0 && !OrdinalTokenRegex().IsMatch(w)))
+            {
+                garbageWords++;
+                continue;
+            }
+
+            if (letters >= 2 || (letters == 1 && digits == 0 && char.ToLowerInvariant(w[0]) is 'a' or 'i' or 'o' or 'e' or 'y' or 'à' or 'é'))
+                cleanWords++;
+            else
+                garbageWords++;
+        }
+    }
+
+    private static string NormalizeForComparisonMultilingual(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return string.Empty;
+
+        string decomposed = input.Normalize(NormalizationForm.FormKC);
+        var sb = new StringBuilder(decomposed.Length);
+        bool prevSpace = false;
+
+        foreach (char ch in decomposed)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!prevSpace && sb.Length > 0)
+                {
+                    sb.Append(' ');
+                    prevSpace = true;
+                }
+                continue;
+            }
+
+            char lower = char.ToLowerInvariant(ch);
+            if (char.IsLetterOrDigit(lower))
+            {
+                sb.Append(lower);
+                prevSpace = false;
+            }
         }
 
         return sb.ToString().Trim();

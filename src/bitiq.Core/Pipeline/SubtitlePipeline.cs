@@ -82,8 +82,9 @@ public sealed partial class SubtitlePipeline : IDisposable
         if (settings.CaptureRegion is not { IsValid: true })
             throw new InvalidOperationException("Önce 'Çevrilecek alanı seç' ile ekranda bir altyazı bölgesi seçin.");
 
+        _ocrService.SetSourceLanguage(settings.SourceLanguage);
         if (!_ocrService.IsAvailable)
-            throw new InvalidOperationException(_ocrService.Status.ErrorMessage ?? "Windows İngilizce OCR paketi hazır değil.");
+            throw new InvalidOperationException(_ocrService.Status.ErrorMessage ?? "Windows OCR paketi hazır değil.");
 
         if (settings.CaptureRegion.IsWindowLocked && targetWindowHwnd == IntPtr.Zero)
         {
@@ -139,6 +140,13 @@ public sealed partial class SubtitlePipeline : IDisposable
 
     public void ApplyLiveSettings(AppSettings settings)
     {
+        if (!string.Equals(_ocrService.ActiveSourceLanguageCode, settings.SourceLanguage, StringComparison.OrdinalIgnoreCase))
+        {
+            _ocrService.SetSourceLanguage(settings.SourceLanguage);
+            _stabilizer.Reset();
+            ResetIncompleteBuffer();
+        }
+
         _stabilizer.Configure(settings.StabilityFrames, settings.TypewriterDebounceMs);
         _ocrService.SetPreprocessEnabled(settings.OcrPreprocessEnabled);
         _captureService.UpdateChangeThreshold(settings.FrameChangeThreshold);
@@ -258,6 +266,21 @@ public sealed partial class SubtitlePipeline : IDisposable
         var settings = _settingsProvider();
         var translator = _translatorProvider();
         double renderMs = 0;
+
+        if (string.Equals(settings.SourceLanguage, settings.TargetLanguage, StringComparison.OrdinalIgnoreCase))
+        {
+            Volatile.Write(ref _currentlyDisplayedTurkish, sourceText);
+            _lastShownTimestampMs = Environment.TickCount64;
+            SubtitleUpdated?.Invoke(new SubtitleUpdateEvent
+            {
+                SequenceId = seqId,
+                EnglishText = sourceText,
+                TurkishText = sourceText,
+                IsPartial = false,
+                IsCleared = false
+            });
+            return;
+        }
 
         try
         {

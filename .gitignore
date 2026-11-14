@@ -16,7 +16,9 @@ TestResults/
 *.zip
 *.pdb
 
-## Local runtime data (if ever placed in repo)
+## Local runtime data & test media (if ever placed in repo)
 models/
 llama/
 settings.json
+test.mp4
+test.txt

@@ -192,9 +192,9 @@ public sealed class LlamaServerManager : IDisposable
         int threads = Math.Clamp(cpuThreads, 1, 8);
         int ngl = backendKey == "cpu" ? 0 : 99;
 
-        // Küçük bağlam (1024), tek slot (-np 1), flash attention açık (-fa on), web arayüzü kapalı (--no-webui)
+        // Küçük bağlam (1024), tek slot (-np 1), flash attention açık (-fa on), RAM prompt önbelleği kapalı (--cache-ram 0), web arayüzü kapalı (--no-webui)
         string args =
-            $"--host 127.0.0.1 --port {port} -m \"{modelPath}\" -ngl {ngl} -c 1024 -np 1 -fa on --no-webui -t {threads}";
+            $"--host 127.0.0.1 --port {port} -m \"{modelPath}\" -ngl {ngl} -c 1024 -np 1 -fa on --cache-ram 0 --no-webui -t {threads}";
 
         var psi = new ProcessStartInfo
         {

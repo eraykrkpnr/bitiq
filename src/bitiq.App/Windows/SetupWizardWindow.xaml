@@ -18,18 +18,31 @@
         </Grid.RowDefinitions>
 
         <!-- Başlık -->
-        <StackPanel Grid.Row="0" Margin="0,0,0,16">
-            <TextBlock Text="bitiq'e Hoş Geldiniz" FontSize="24" FontWeight="Bold" Foreground="#F8FAFC" />
-            <TextBlock Text="Başlamak için hangi çeviri motorunu kullanmak istediğinizi seçin. İstediğiniz zaman ana ekrandan değiştirebilirsiniz."
-                       Foreground="#94A3B8"
-                       TextWrapping="Wrap"
-                       Margin="0,6,0,0" />
-        </StackPanel>
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+                <TextBlock x:Name="WelcomeHeaderText" Text="bitiq'e Hoş Geldiniz" FontSize="24" FontWeight="Bold" Foreground="#F8FAFC" />
+                <TextBlock x:Name="WelcomeDescText"
+                           Text="Başlamak için hangi çeviri motorunu kullanmak istediğinizi seçin. İstediğiniz zaman ana ekrandan değiştirebilirsiniz."
+                           Foreground="#94A3B8"
+                           TextWrapping="Wrap"
+                           Margin="0,6,0,0" />
+            </StackPanel>
+            <Border Grid.Column="1" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="6" Padding="2" VerticalAlignment="Top" Margin="12,2,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="WizardLangTrBtn" Content="TR" Padding="10,4" FontSize="12" FontWeight="Bold" BorderThickness="0" Background="#0284C7" Foreground="White" Cursor="Hand" Click="WizardLangTrBtn_Click" />
+                    <Button x:Name="WizardLangEnBtn" Content="EN" Padding="10,4" FontSize="12" FontWeight="Bold" BorderThickness="0" Background="Transparent" Foreground="#94A3B8" Cursor="Hand" Click="WizardLangEnBtn_Click" />
+                </StackPanel>
+            </Border>
+        </Grid>
 
         <!-- Sistem Kontrolü -->
         <Border Grid.Row="1" Background="#1E293B" CornerRadius="8" Padding="14" Margin="0,0,0,16">
             <StackPanel>
-                <TextBlock Text="Sistem Hazırlık Kontrolü" FontWeight="SemiBold" Foreground="#38BDF8" Margin="0,0,0,6" />
+                <TextBlock x:Name="SysCheckHeaderText" Text="Sistem Hazırlık Kontrolü" FontWeight="SemiBold" Foreground="#38BDF8" Margin="0,0,0,6" />
                 <TextBlock x:Name="OcrStatusText" TextWrapping="Wrap" FontSize="12.5" Foreground="#E2E8F0" />
                 <TextBlock x:Name="GpuStatusText" TextWrapping="Wrap" FontSize="12.5" Foreground="#E2E8F0" Margin="0,4,0,0" />
             </StackPanel>
@@ -54,9 +67,9 @@
                     <ControlTemplate TargetType="RadioButton">
                         <Border x:Name="Card" Background="#1E293B" BorderBrush="#334155" BorderThickness="2" CornerRadius="10" Padding="16" Cursor="Hand">
                             <StackPanel>
-                                <TextBlock Text="Yerel (TranslateGemma)" FontSize="16" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
-                                <TextBlock Text="İnternetsiz, daha doğal" Foreground="#38BDF8" FontWeight="SemiBold" Margin="0,4,0,8" />
-                                <TextBlock Text="• RTX GPU ile ultra düşük gecikme&#x0a;• İnternet bağlantısı gerekmez&#x0a;• İlk seferde ~2.9–4.7 GB indirilir (kesilirse devam eder)"
+                                <TextBlock x:Name="LocalCardTitleText" Text="Yerel (TranslateGemma)" FontSize="16" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
+                                <TextBlock x:Name="LocalCardSubtitleText" Text="İnternetsiz, daha doğal" Foreground="#38BDF8" FontWeight="SemiBold" Margin="0,4,0,8" />
+                                <TextBlock x:Name="LocalCardDescText" Text="• RTX GPU ile ultra düşük gecikme&#x0a;• İnternet bağlantısı gerekmez&#x0a;• İlk seferde ~2.9–4.7 GB indirilir (kesilirse devam eder)"
                                            Foreground="#CBD5E1"
                                            FontSize="12.5"
                                            TextWrapping="Wrap" />
@@ -84,9 +97,9 @@
                     <ControlTemplate TargetType="RadioButton">
                         <Border x:Name="Card" Background="#1E293B" BorderBrush="#334155" BorderThickness="2" CornerRadius="10" Padding="16" Cursor="Hand">
                             <StackPanel>
-                                <TextBlock Text="Google Translate" FontSize="16" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
-                                <TextBlock Text="Hafif ve hızlı" Foreground="#4ADE80" FontWeight="SemiBold" Margin="0,4,0,8" />
-                                <TextBlock Text="• Hiçbir model veya ek dosya indirilmez&#x0a;• GPU/VRAM tüketimi sıfırdır&#x0a;• Hemen kullanıma hazır (internet gerektirir)"
+                                <TextBlock x:Name="GoogleCardTitleText" Text="Google Translate" FontSize="16" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
+                                <TextBlock x:Name="GoogleCardSubtitleText" Text="Hafif ve hızlı" Foreground="#4ADE80" FontWeight="SemiBold" Margin="0,4,0,8" />
+                                <TextBlock x:Name="GoogleCardDescText" Text="• Hiçbir model veya ek dosya indirilmez&#x0a;• GPU/VRAM tüketimi sıfırdır&#x0a;• Hemen kullanıma hazır (internet gerektirir)"
                                            Foreground="#CBD5E1"
                                            FontSize="12.5"
                                            TextWrapping="Wrap" />
@@ -106,10 +119,10 @@
         <!-- İndirme İlerlemesi ve Model Kalitesi -->
         <StackPanel Grid.Row="3" Margin="0,0,0,14">
             <StackPanel x:Name="QuantPanel" Visibility="Collapsed" Margin="0,0,0,12">
-                <TextBlock Text="Yerel Model Kalitesi:" FontSize="12.5" Foreground="#94A3B8" Margin="0,0,0,4" />
+                <TextBlock x:Name="QuantLabelText" Text="Yerel Model Kalitesi:" FontSize="12.5" Foreground="#94A3B8" Margin="0,0,0,4" />
                 <ComboBox x:Name="QuantCombo" Height="30">
-                    <ComboBoxItem Content="Q8_0 (~3.85 GB — En Yüksek Kalite, Varsayılan)" Tag="Q8_0" IsSelected="True" />
-                    <ComboBoxItem Content="Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)" Tag="Q4_K_M" />
+                    <ComboBoxItem x:Name="QuantQ8Item" Content="Q8_0 (~3.85 GB — En Yüksek Kalite, Varsayılan)" Tag="Q8_0" IsSelected="True" />
+                    <ComboBoxItem x:Name="QuantQ4Item" Content="Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)" Tag="Q4_K_M" />
                 </ComboBox>
             </StackPanel>
             <StackPanel x:Name="ProgressPanel" Visibility="Collapsed">

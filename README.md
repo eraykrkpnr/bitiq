@@ -15,7 +15,8 @@
 - **Dual Translation Engine**:
   - **Local AI (TranslateGemma 4B)**: Runs offline directly on your GPU (`CUDA 13.5` / `CUDA 12.4`, with `Vulkan` and `CPU` fallbacks) for natural, context-aware translations.
   - **Google Translate**: Lightweight, instant translation with zero GPU/VRAM usage and zero extra disk space. Switching to Google mode completely offloads `llama-server` from both RAM and GPU VRAM.
-- **Smart OCR & Subtitle Stabilization**: Combines in-process `Windows.Media.Ocr` with smart background removal for borderless or outlined subtitles, frame-change gating, stability filtering, incomplete-sentence merging, and optional typewriter streaming.
+- **Multi-Language OCR & Translation (12 Languages) + Bilingual UI (`TR` / `EN`)**: Translate from any supported on-screen language (`English, Turkish, German, French, Spanish, Italian, Portuguese, Russian, Japanese, Korean, Chinese, Arabic`) into your chosen target language, install missing Windows OCR packs directly in-app with one click, and switch the interface between Turkish (`TR`) and English (`EN`).
+- **Smart OCR & Subtitle Stabilization**: Combines in-process `Windows.Media.Ocr` with 2x Catmull-Rom bicubic upscaling and adaptive 7x7 sliding-median background suppression for borderless or outlined white subtitles, frame-change gating, word-subset stability filtering, incomplete-sentence merging, and optional typewriter streaming.
 - **Flexible Desktop Overlay & OBS Integration**:
   - Click-through transparent desktop subtitle overlay that can be toggled on/off with one click (for OBS-only streaming setups).
   - Built-in local `127.0.0.1` HTTP + SSE server requiring no administrator privileges for **OBS Browser Source**, plus a fallback **Chroma Key** window.
@@ -47,7 +48,7 @@ No .NET SDK or Python installation is required to run **bitiq**. Download the po
 | Component | Minimum (Google Translate / CPU) | Recommended (Local GPU — TranslateGemma 4B) |
 |---|---|---|
 | **Operating System** | Windows 10 (build 19041+) or Windows 11 **(64-bit / x64)** | Windows 11 **(64-bit / x64)** |
-| **Windows OCR Pack** | Windows `en-US` OCR capability *(Required)* | Windows `en-US` OCR capability *(Required)* |
+| **Windows OCR Pack** | Built-in Windows OCR capability *(12 languages supported)* | Built-in Windows OCR capability *(in-app 1-click install)* |
 | **Processor (CPU)** | 4-core modern x64 CPU | 6+ core modern x64 CPU |
 | **Memory (RAM)** | 4 GB RAM *(Google mode uses < 200 MB)* | 16 GB RAM |
 | **Graphics (GPU)** | None required *(Google mode)* / Vulkan-capable GPU | **NVIDIA RTX GPU** (**4+ GB VRAM** for `Q4_K_M`, **6+ GB VRAM** for `Q8_0`) |
@@ -55,12 +56,12 @@ No .NET SDK or Python installation is required to run **bitiq**. Download the po
 | **Storage** | ~200 MB free space | **5 – 7 GB** free SSD space *(for GGUF model & `llama.cpp` binaries)* |
 | **Internet Access** | Required for Google Translate mode | Required only for the initial model download (offline afterward) |
 
-### Installing the Windows English (`en-US`) OCR Language Pack
+### Installing Windows OCR Language Packs
 
-`bitiq` uses the built-in `Windows.Media.Ocr` API. If the English OCR capability is missing on your system, the app will display a warning on startup with setup instructions:
+`bitiq` uses the built-in `Windows.Media.Ocr` API and supports 12 source languages (`en`, `tr`, `de`, `fr`, `es`, `it`, `pt`, `ru`, `ja`, `ko`, `zh`, `ar`). Any missing OCR pack can be downloaded and enabled with one click directly from the source-language dropdown inside `bitiq` (or installed manually):
 
-- **Windows Settings**: *Settings → Time & language → Language & region → Add a language → English (United States)* and verify **Basic typing** / **Optical character recognition (OCR)** is installed.
-- **PowerShell (Run as Administrator)**:
+- **Windows Settings**: *Settings → Time & language → Language & region → Add a language* and verify **Optical character recognition (OCR)** is installed.
+- **PowerShell (Run as Administrator)** — e.g. for `en-US`:
   ```powershell
   Add-WindowsCapability -Online -Name Language.OCR~~~en-US~0.0.1.0
   ```

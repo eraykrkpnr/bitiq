@@ -24,6 +24,7 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -38,10 +39,38 @@
                                Margin="18,3,0,0" />
                 </StackPanel>
 
-                <StackPanel x:Name="InlineDownloadPanel" Grid.Column="1" Width="260" Visibility="Collapsed" VerticalAlignment="Center">
+                <StackPanel x:Name="InlineDownloadPanel" Grid.Column="1" Width="260" Visibility="Collapsed" VerticalAlignment="Center" Margin="0,0,12,0">
                     <TextBlock x:Name="InlineDownloadText" Text="İndiriliyor…" FontSize="11.5" Foreground="#38BDF8" Margin="0,0,0,4" />
                     <ProgressBar x:Name="InlineDownloadBar" Height="10" Minimum="0" Maximum="100" Value="0" Foreground="#38BDF8" Background="#1E293B" />
                 </StackPanel>
+
+                <!-- Arayüz Dili Toggle (TR | EN) -->
+                <Border Grid.Column="2" Background="#0F172A" BorderBrush="#334155" BorderThickness="1" CornerRadius="6" Padding="2" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal">
+                        <Button x:Name="UiLangTrBtn"
+                                Content="TR"
+                                Width="38"
+                                Height="28"
+                                FontSize="12"
+                                FontWeight="Bold"
+                                Foreground="#F8FAFC"
+                                Background="#0284C7"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Click="UiLangTrBtn_Click" />
+                        <Button x:Name="UiLangEnBtn"
+                                Content="EN"
+                                Width="38"
+                                Height="28"
+                                FontSize="12"
+                                FontWeight="Bold"
+                                Foreground="#94A3B8"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Click="UiLangEnBtn_Click" />
+                    </StackPanel>
+                </Border>
             </Grid>
         </Border>
 
@@ -54,7 +83,8 @@
                 <TextBlock x:Name="DriverWarningText" Foreground="#FDE68A" FontSize="12.5" TextWrapping="Wrap" />
             </Border>
             <Border x:Name="OverlapWarningBanner" Visibility="Collapsed" Background="#450A0A" BorderBrush="#EF4444" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,8">
-                <TextBlock Text="⚠ Uyarı: Altyazı penceresi OCR yakalama bölgesiyle çakışıyor! Uygulamanın kendi çevirisini okumaması için altyazı katmanını 'Konumlandır' ile taşıyın veya başka bir bölge seçin."
+                <TextBlock x:Name="OverlapWarningText"
+                           Text="⚠ Uyarı: Altyazı penceresi OCR yakalama bölgesiyle çakışıyor! Uygulamanın kendi çevirisini okumaması için altyazı katmanını 'Konumlandır' ile taşıyın veya başka bir bölge seçin."
                            Foreground="#FECACA" FontSize="12.5" FontWeight="SemiBold" TextWrapping="Wrap" />
             </Border>
         </StackPanel>
@@ -148,10 +178,10 @@
         <!-- Sekmeler -->
         <TabControl x:Name="MainTabs" Grid.Row="3" Background="#111827" BorderBrush="#1F2937" BorderThickness="1" Padding="14" SelectionChanged="MainTabs_SelectionChanged">
             <!-- SEKME 1: ANA EKRAN -->
-            <TabItem Header="Genel">
+            <TabItem x:Name="MainTabGeneral" Header="Genel">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
-                        <TextBlock Text="Çeviri Motoru Seçimi" FontSize="15" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,10" />
+                        <TextBlock x:Name="EngineSelectorHeaderText" Text="Çeviri Motoru Seçimi" FontSize="15" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,10" />
                         <Grid Margin="0,0,0,14">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -168,11 +198,7 @@
                                 <RadioButton.Template>
                                     <ControlTemplate TargetType="RadioButton">
                                         <Border x:Name="Card" Background="#1E293B" BorderBrush="#334155" BorderThickness="2" CornerRadius="10" Padding="16" Cursor="Hand">
-                                            <StackPanel>
-                                                <TextBlock Text="Yerel (TranslateGemma): internetsiz, daha doğal" FontSize="15" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
-                                                <TextBlock Text="RTX GPU üzerinde çalışır. İlk seferde llama.cpp ve TranslateGemma 4B indirilir."
-                                                           Foreground="#94A3B8" FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,0" />
-                                            </StackPanel>
+                                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsChecked" Value="True">
@@ -182,6 +208,11 @@
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
                                 </RadioButton.Template>
+                                <StackPanel>
+                                    <TextBlock x:Name="EngineLocalTitleText" Text="Yerel (TranslateGemma): internetsiz, daha doğal" FontSize="15" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="EngineLocalDescText" Text="RTX GPU üzerinde çalışır. İlk seferde llama.cpp ve TranslateGemma 4B indirilir."
+                                               Foreground="#94A3B8" FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                </StackPanel>
                             </RadioButton>
 
                             <RadioButton x:Name="EngineGoogleRadio"
@@ -193,11 +224,7 @@
                                 <RadioButton.Template>
                                     <ControlTemplate TargetType="RadioButton">
                                         <Border x:Name="Card" Background="#1E293B" BorderBrush="#334155" BorderThickness="2" CornerRadius="10" Padding="16" Cursor="Hand">
-                                            <StackPanel>
-                                                <TextBlock Text="Google Translate: hafif ve hızlı" FontSize="15" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
-                                                <TextBlock Text="Ekran kartı ve bellek kullanmaz. Seçildiğinde yerel model VRAM/RAM'den tamamen boşaltılır."
-                                                           Foreground="#94A3B8" FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,0" />
-                                            </StackPanel>
+                                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsChecked" Value="True">
@@ -207,12 +234,135 @@
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
                                 </RadioButton.Template>
+                                <StackPanel>
+                                    <TextBlock x:Name="EngineGoogleTitleText" Text="Google Translate: hafif ve hızlı" FontSize="15" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="EngineGoogleDescText" Text="Ekran kartı ve bellek kullanmaz. Seçildiğinde yerel model VRAM/RAM'den tamamen boşaltılır."
+                                               Foreground="#94A3B8" FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                </StackPanel>
                             </RadioButton>
                         </Grid>
 
+                        <!-- Dil Ayarları (Ekrandaki Dil -> Çeviri Dili) -->
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="🎯 Yakalama Kaynağı (Ekran veya Pencereye Kilitle)" FontWeight="SemiBold" Foreground="#38BDF8" Margin="0,0,0,8" />
+                                <TextBlock x:Name="LangSettingsHeaderText" Text="🌐 Dil Ayarları (Ekrandaki Dil → Çeviri Dili)" FontWeight="SemiBold" Foreground="#38BDF8" Margin="0,0,0,10" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="4" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock x:Name="SourceLangLabelText" Grid.Row="0" Grid.Column="0" Text="Ekrandaki Dil (OCR):" FontSize="12" Foreground="#94A3B8" />
+                                    <TextBlock x:Name="TargetLangLabelText" Grid.Row="0" Grid.Column="2" Text="Çevrilecek Dil (Altyazı):" FontSize="12" Foreground="#94A3B8" />
+
+                                    <ComboBox x:Name="SourceLangCombo"
+                                              Grid.Row="2"
+                                              Grid.Column="0"
+                                              Height="36"
+                                              HorizontalContentAlignment="Stretch"
+                                              SelectionChanged="SourceLangCombo_SelectionChanged">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid HorizontalAlignment="Stretch">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="{Binding DisplayName}"
+                                                               Foreground="{Binding NameBrush}"
+                                                               FontWeight="{Binding NameWeight}"
+                                                               VerticalAlignment="Center"
+                                                               Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding StatusText}"
+                                                               Foreground="{Binding StatusBrush}"
+                                                               FontSize="11.5"
+                                                               VerticalAlignment="Center"
+                                                               Margin="0,0,6,0" />
+                                                    <Button Grid.Column="2"
+                                                            Content="{Binding DownloadButtonText}"
+                                                            Tag="{Binding Code}"
+                                                            Visibility="{Binding DownloadButtonVisibility}"
+                                                            Height="22"
+                                                            Padding="8,0"
+                                                            FontSize="11"
+                                                            FontWeight="Bold"
+                                                            Background="#0284C7"
+                                                            Foreground="White"
+                                                            BorderThickness="0"
+                                                            Cursor="Hand"
+                                                            ToolTip="{Binding DownloadTooltip}"
+                                                            Click="InstallOcrLangBtn_Click" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+
+                                    <Button x:Name="SwapLangsBtn"
+                                            Grid.Row="2"
+                                            Grid.Column="1"
+                                            Content="⇄"
+                                            Width="38"
+                                            Height="36"
+                                            Margin="8,0"
+                                            FontSize="16"
+                                            FontWeight="Bold"
+                                            Background="#1E293B"
+                                            Foreground="#38BDF8"
+                                            BorderBrush="#334155"
+                                            BorderThickness="1"
+                                            Cursor="Hand"
+                                            ToolTip="Dilleri değiştir"
+                                            Click="SwapLangsBtn_Click" />
+
+                                    <ComboBox x:Name="TargetLangCombo"
+                                              Grid.Row="2"
+                                              Grid.Column="2"
+                                              Height="36"
+                                              SelectionChanged="TargetLangCombo_SelectionChanged" />
+                                </Grid>
+
+                                <TextBlock x:Name="SourceOcrPackInfoText"
+                                           Text="Kurulu OCR dilleri doğrudan seçilebilir. Yanında '⬇ İndir' görünen diller Windows OCR paketi kurulduktan sonra aktif olur."
+                                           Foreground="#94A3B8"
+                                           FontSize="12"
+                                           TextWrapping="Wrap"
+                                           Margin="0,8,0,0" />
+                                <StackPanel x:Name="QuickInstallOcrPanel" Orientation="Horizontal" Visibility="Collapsed" Margin="0,8,0,0">
+                                    <TextBlock x:Name="QuickInstallOcrText" Foreground="#FDE68A" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                    <Button x:Name="QuickInstallOcrBtn"
+                                            Content="⬇ OCR Paketini İndir ve Kur"
+                                            Height="28"
+                                            Padding="12,0"
+                                            FontSize="12"
+                                            FontWeight="Bold"
+                                            Background="#0284C7"
+                                            Foreground="White"
+                                            BorderThickness="0"
+                                            Cursor="Hand"
+                                            Click="InstallOcrLangBtn_Click" />
+                                </StackPanel>
+                                <ProgressBar x:Name="OcrInstallProgressBar"
+                                             Height="6"
+                                             IsIndeterminate="True"
+                                             Visibility="Collapsed"
+                                             Foreground="#38BDF8"
+                                             Background="#1E293B"
+                                             Margin="0,6,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock x:Name="CaptureSourceHeaderText" Text="🎯 Yakalama Kaynağı (Ekran veya Pencereye Kilitle)" FontWeight="SemiBold" Foreground="#38BDF8" Margin="0,0,0,8" />
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -235,7 +385,8 @@
                                             BorderThickness="1"
                                             Click="RefreshWindowsBtn_Click" />
                                 </Grid>
-                                <TextBlock Text="💡 İpucu: Bir pencere seçip 'Çevrilecek Alanı Seç' derseniz yakalama ve çeviri o pencereye kilitlenir. Üstüne başka bir pencere veya Türkçe altyazı kutusu gelse bile yalnızca seçilen pencere yakalanır."
+                                <TextBlock x:Name="CaptureSourceHintText"
+                                           Text="💡 İpucu: Bir pencere seçip 'Çevrilecek Alanı Seç' derseniz yakalama ve çeviri o pencereye kilitlenir. Üstüne başka bir pencere veya altyazı kutusu gelse bile yalnızca seçilen pencere yakalanır."
                                            Foreground="#94A3B8"
                                            FontSize="12"
                                            TextWrapping="Wrap"
@@ -245,7 +396,7 @@
 
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="Seçili Yakalama Bölgesi (İngilizce → Türkçe)" FontWeight="SemiBold" Foreground="#38BDF8" />
+                                <TextBlock x:Name="RegionSummaryHeaderText" Text="Seçili Yakalama Bölgesi (İngilizce → Türkçe)" FontWeight="SemiBold" Foreground="#38BDF8" />
                                 <TextBlock x:Name="RegionSummaryText" Text="Henüz seçilmedi." Foreground="#E2E8F0" FontSize="13" TextWrapping="Wrap" Margin="0,4,0,0" />
                             </StackPanel>
                         </Border>
@@ -271,10 +422,10 @@
 
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14">
                             <StackPanel>
-                                <TextBlock Text="Canlı Algılanan &amp; Çevrilen Metin" FontWeight="SemiBold" Foreground="#38BDF8" Margin="0,0,0,8" />
-                                <TextBlock Text="İngilizce (OCR):" FontSize="11.5" Foreground="#94A3B8" />
+                                <TextBlock x:Name="LivePanelHeaderText" Text="Canlı Algılanan &amp; Çevrilen Metin" FontWeight="SemiBold" Foreground="#38BDF8" Margin="0,0,0,8" />
+                                <TextBlock x:Name="LiveSourceLabelText" Text="İngilizce (OCR):" FontSize="11.5" Foreground="#94A3B8" />
                                 <TextBlock x:Name="LiveEnglishText" Text="—" FontSize="14" Foreground="#CBD5E1" TextWrapping="Wrap" Margin="0,2,0,10" />
-                                <TextBlock Text="Türkçe (Çeviri):" FontSize="11.5" Foreground="#94A3B8" />
+                                <TextBlock x:Name="LiveTargetLabelText" Text="Türkçe (Çeviri):" FontSize="11.5" Foreground="#94A3B8" />
                                 <TextBlock x:Name="LiveTurkishText" Text="—" FontSize="16" FontWeight="SemiBold" Foreground="#FFFFFF" TextWrapping="Wrap" Margin="0,2,0,0" />
                             </StackPanel>
                         </Border>
@@ -283,7 +434,7 @@
             </TabItem>
 
             <!-- SEKME 2: GÖRÜNÜM (STİL SİSTEMİ) -->
-            <TabItem Header="Görünüm">
+            <TabItem x:Name="MainTabStyle" Header="Görünüm">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <!-- Canlı Önizleme -->
@@ -296,7 +447,7 @@
                                 </LinearGradientBrush>
                             </Border.Background>
                             <Grid>
-                                <TextBlock Text="CANLI ÖNİZLEME" Foreground="#475569" FontSize="11" FontWeight="Bold" Margin="10,8" HorizontalAlignment="Left" VerticalAlignment="Top" />
+                                <TextBlock x:Name="StyleLivePreviewLabel" Text="CANLI ÖNİZLEME" Foreground="#475569" FontSize="11" FontWeight="Bold" Margin="10,8" HorizontalAlignment="Left" VerticalAlignment="Top" />
                                 <controls:StyledSubtitlePresenter x:Name="StylePreviewPresenter" />
                             </Grid>
                         </Border>
@@ -304,21 +455,21 @@
                         <!-- Hazır Stiller & JSON İçe/Dışa Aktar -->
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,12">
                             <WrapPanel VerticalAlignment="Center">
-                                <TextBlock Text="Hazır Stil:" VerticalAlignment="Center" Foreground="#CBD5E1" FontWeight="SemiBold" Margin="0,0,8,4" />
+                                <TextBlock x:Name="PresetLabelText" Text="Hazır Stil:" VerticalAlignment="Center" Foreground="#CBD5E1" FontWeight="SemiBold" Margin="0,0,8,4" />
                                 <ComboBox x:Name="ProfileCombo" Width="210" Height="30" Margin="0,0,8,4" SelectionChanged="ProfileCombo_SelectionChanged" />
-                                <Button Content="Kaydet" Padding="10,5" Margin="0,0,6,4" Background="#0284C7" Foreground="White" BorderThickness="0" Click="SaveProfile_Click" />
-                                <Button Content="Farklı Kaydet" Padding="10,5" Margin="0,0,6,4" Background="#334155" Foreground="White" BorderThickness="0" Click="SaveAsProfile_Click" />
-                                <Button Content="Yeniden Adlandır" Padding="10,5" Margin="0,0,6,4" Background="#334155" Foreground="White" BorderThickness="0" Click="RenameProfile_Click" />
-                                <Button Content="Sil" Padding="10,5" Margin="0,0,10,4" Background="#7F1D1D" Foreground="White" BorderThickness="0" Click="DeleteProfile_Click" />
-                                <Button Content="JSON Dışa Aktar" Padding="10,5" Margin="0,0,6,4" Background="#1E293B" Foreground="#38BDF8" BorderBrush="#334155" BorderThickness="1" Click="ExportStyleJson_Click" />
-                                <Button Content="JSON İçe Aktar" Padding="10,5" Margin="0,0,0,4" Background="#1E293B" Foreground="#38BDF8" BorderBrush="#334155" BorderThickness="1" Click="ImportStyleJson_Click" />
+                                <Button x:Name="SaveProfileBtn" Content="Kaydet" Padding="10,5" Margin="0,0,6,4" Background="#0284C7" Foreground="White" BorderThickness="0" Click="SaveProfile_Click" />
+                                <Button x:Name="SaveAsProfileBtn" Content="Farklı Kaydet" Padding="10,5" Margin="0,0,6,4" Background="#334155" Foreground="White" BorderThickness="0" Click="SaveAsProfile_Click" />
+                                <Button x:Name="RenameProfileBtn" Content="Yeniden Adlandır" Padding="10,5" Margin="0,0,6,4" Background="#334155" Foreground="White" BorderThickness="0" Click="RenameProfile_Click" />
+                                <Button x:Name="DeleteProfileBtn" Content="Sil" Padding="10,5" Margin="0,0,10,4" Background="#7F1D1D" Foreground="White" BorderThickness="0" Click="DeleteProfile_Click" />
+                                <Button x:Name="ExportJsonBtn" Content="JSON Dışa Aktar" Padding="10,5" Margin="0,0,6,4" Background="#1E293B" Foreground="#38BDF8" BorderBrush="#334155" BorderThickness="1" Click="ExportStyleJson_Click" />
+                                <Button x:Name="ImportJsonBtn" Content="JSON İçe Aktar" Padding="10,5" Margin="0,0,0,4" Background="#1E293B" Foreground="#38BDF8" BorderBrush="#334155" BorderThickness="1" Click="ImportStyleJson_Click" />
                             </WrapPanel>
                         </Border>
 
                         <!-- Üstte 6 Temel Ayar -->
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="Temel Stil Ayarları (Anında Yansır)" FontWeight="Bold" Foreground="#38BDF8" Margin="0,0,0,10" />
+                                <TextBlock x:Name="BasicStyleHeaderText" Text="Temel Stil Ayarları (Anında Yansır)" FontWeight="Bold" Foreground="#38BDF8" Margin="0,0,0,10" />
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -335,7 +486,7 @@
 
                                     <!-- 1. Yazı Tipi (Aranabilir) -->
                                     <StackPanel Grid.Row="0" Grid.Column="0">
-                                        <TextBlock Text="1. Yazı Tipi (Ara ve Seç)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="FontFamilyLabelText" Text="1. Yazı Tipi (Ara ve Seç)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="120" />
@@ -355,13 +506,13 @@
 
                                     <!-- 3. Yazı Rengi -->
                                     <StackPanel Grid.Row="2" Grid.Column="0">
-                                        <TextBlock Text="3. Yazı Rengi" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="TextColorLabelText" Text="3. Yazı Rengi" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <controls:ColorFieldControl x:Name="TextColorPicker" ColorChanged="StyleColor_Changed" />
                                     </StackPanel>
 
                                     <!-- 4. Arka Plan Rengi -->
                                     <StackPanel Grid.Row="2" Grid.Column="2">
-                                        <TextBlock Text="4. Arka Plan Rengi" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="BgColorLabelText" Text="4. Arka Plan Rengi" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <controls:ColorFieldControl x:Name="BgColorPicker" ColorChanged="StyleColor_Changed" />
                                     </StackPanel>
 
@@ -373,7 +524,7 @@
 
                                     <!-- 6. Konum -->
                                     <StackPanel Grid.Row="4" Grid.Column="2">
-                                        <TextBlock Text="6. Konum" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="PositionLabelText" Text="6. Konum" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <ComboBox x:Name="PositionPresetCombo" Height="28" SelectionChanged="StyleInput_Changed">
                                             <ComboBoxItem Content="Alt Orta" Tag="BottomCenter" />
                                             <ComboBoxItem Content="Üst Orta" Tag="TopCenter" />
@@ -389,7 +540,8 @@
                         </Border>
 
                         <!-- Açılır Gelişmiş Stil -->
-                        <Expander Header="Gelişmiş Stil (Kontur, Gölge, Arka Plan Modu, Yerleşim, Davranış, Orijinal Metin)"
+                        <Expander x:Name="AdvancedStyleExpander"
+                                  Header="Gelişmiş Stil (Kontur, Gölge, Arka Plan Modu, Yerleşim, Davranış, Orijinal Metin)"
                                   Foreground="#F8FAFC"
                                   FontWeight="SemiBold"
                                   Background="#0F172A"
@@ -398,10 +550,10 @@
                                   Padding="12">
                             <StackPanel Margin="0,10,0,0">
                                 <!-- Yazı Ayrıntıları -->
-                                <TextBlock Text="Yazı Ayrıntıları" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
+                                <TextBlock x:Name="StyleFontDetailsHeaderText" Text="Yazı Ayrıntıları" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
                                 <WrapPanel Margin="0,0,0,12">
                                     <StackPanel Width="150" Margin="0,0,14,8">
-                                        <TextBlock Text="Kalınlık" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="FontWeightLabelText" Text="Kalınlık" FontSize="12" Foreground="#94A3B8" />
                                         <ComboBox x:Name="FontWeightCombo" Height="28" SelectionChanged="StyleInput_Changed">
                                             <ComboBoxItem Content="İnce (300)" Tag="300" />
                                             <ComboBoxItem Content="Normal (400)" Tag="400" />
@@ -413,7 +565,7 @@
                                         </ComboBox>
                                     </StackPanel>
                                     <StackPanel Width="140" Margin="0,0,14,8">
-                                        <TextBlock Text="Hizalama" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="TextAlignLabelText" Text="Hizalama" FontSize="12" Foreground="#94A3B8" />
                                         <ComboBox x:Name="TextAlignCombo" Height="28" SelectionChanged="StyleInput_Changed">
                                             <ComboBoxItem Content="Orta" Tag="Center" />
                                             <ComboBoxItem Content="Sol" Tag="Left" />
@@ -433,14 +585,14 @@
                                 </WrapPanel>
 
                                 <!-- Renk, Kontur & Gölge -->
-                                <TextBlock Text="Renk, Kontur ve Gölge" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
+                                <TextBlock x:Name="StyleColorOutlineHeaderText" Text="Renk, Kontur ve Gölge" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
                                 <WrapPanel Margin="0,0,0,12">
                                     <StackPanel Width="150" Margin="0,0,14,8">
                                         <TextBlock x:Name="TextOpacityLabel" Text="Yazı Opaklığı: %100" FontSize="12" Foreground="#94A3B8" />
                                         <Slider x:Name="TextOpacitySlider" Minimum="10" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="StyleInput_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="140" Margin="0,0,14,8">
-                                        <TextBlock Text="Kontur Rengi" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="OutlineColorLabelText" Text="Kontur Rengi" FontSize="12" Foreground="#94A3B8" />
                                         <controls:ColorFieldControl x:Name="OutlineColorPicker" ColorChanged="StyleColor_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="145" Margin="0,0,14,8">
@@ -448,7 +600,7 @@
                                         <Slider x:Name="OutlineThickSlider" Minimum="0" Maximum="8" TickFrequency="0.5" IsSnapToTickEnabled="True" ValueChanged="StyleInput_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="140" Margin="0,0,14,8">
-                                        <TextBlock Text="Gölge Rengi" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="ShadowColorLabelText" Text="Gölge Rengi" FontSize="12" Foreground="#94A3B8" />
                                         <controls:ColorFieldControl x:Name="ShadowColorPicker" ColorChanged="StyleColor_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="145" Margin="0,0,14,8">
@@ -470,10 +622,10 @@
                                 </WrapPanel>
 
                                 <!-- Arka Plan & Kenarlık -->
-                                <TextBlock Text="Arka Plan ve Kenarlık" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
+                                <TextBlock x:Name="StyleBgBorderHeaderText" Text="Arka Plan ve Kenarlık" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
                                 <WrapPanel Margin="0,0,0,12">
                                     <StackPanel Width="180" Margin="0,0,14,8">
-                                        <TextBlock Text="Arka Plan Modu" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="BgModeLabelText" Text="Arka Plan Modu" FontSize="12" Foreground="#94A3B8" />
                                         <ComboBox x:Name="BgModeCombo" Height="28" SelectionChanged="StyleInput_Changed">
                                             <ComboBoxItem Content="Kapalı" Tag="None" />
                                             <ComboBoxItem Content="Satır Başına Kutu" Tag="PerLineBox" />
@@ -494,7 +646,7 @@
                                         <Slider x:Name="PadVSlider" Minimum="0" Maximum="40" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="StyleInput_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="140" Margin="0,0,14,8">
-                                        <TextBlock Text="Kenarlık Rengi" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="BorderColorLabelText" Text="Kenarlık Rengi" FontSize="12" Foreground="#94A3B8" />
                                         <controls:ColorFieldControl x:Name="BorderColorPicker" ColorChanged="StyleColor_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="140" Margin="0,0,14,8">
@@ -504,7 +656,7 @@
                                 </WrapPanel>
 
                                 <!-- Yerleşim & Taşma -->
-                                <TextBlock Text="Yerleşim ve Taşma" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
+                                <TextBlock x:Name="StyleLayoutHeaderText" Text="Yerleşim ve Taşma" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
                                 <WrapPanel Margin="0,0,0,12">
                                     <StackPanel Width="145" Margin="0,0,14,8">
                                         <TextBlock x:Name="OffsetXLabel" Text="İnce Ayar X: %0" FontSize="12" Foreground="#94A3B8" />
@@ -523,7 +675,7 @@
                                         <Slider x:Name="MaxLinesSlider" Minimum="1" Maximum="6" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="StyleInput_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="145" Margin="0,0,14,8">
-                                        <TextBlock Text="Taşma Modu" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="OverflowLabelText" Text="Taşma Modu" FontSize="12" Foreground="#94A3B8" />
                                         <ComboBox x:Name="OverflowCombo" Height="28" SelectionChanged="StyleInput_Changed">
                                             <ComboBoxItem Content="Küçült" Tag="ShrinkToFit" />
                                             <ComboBoxItem Content="Kes" Tag="Clip" />
@@ -532,10 +684,10 @@
                                 </WrapPanel>
 
                                 <!-- Davranış & Orijinal Metin -->
-                                <TextBlock Text="Davranış ve Orijinal Metin" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
+                                <TextBlock x:Name="StyleBehaviorHeaderText" Text="Davranış ve Orijinal Metin" Foreground="#38BDF8" FontWeight="Bold" Margin="0,0,0,8" />
                                 <WrapPanel Margin="0,0,0,8">
                                     <StackPanel Width="145" Margin="0,0,14,8">
-                                        <TextBlock Text="Animasyon" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="AnimLabelText" Text="Animasyon" FontSize="12" Foreground="#94A3B8" />
                                         <ComboBox x:Name="AnimTypeCombo" Height="28" SelectionChanged="StyleInput_Changed">
                                             <ComboBoxItem Content="Yok" Tag="None" />
                                             <ComboBoxItem Content="Solma" Tag="Fade" />
@@ -557,7 +709,7 @@
                                 </WrapPanel>
 
                                 <CheckBox x:Name="ShowOriginalCheck"
-                                          Content="Orijinal İngilizce metni küçük ve ayrı stille göster"
+                                          Content="Orijinal kaynak metni küçük ve ayrı stille göster"
                                           Margin="0,4,0,8"
                                           Checked="StyleCheck_Changed"
                                           Unchecked="StyleCheck_Changed" />
@@ -567,7 +719,7 @@
                                         <Slider x:Name="OrigSizeSlider" Minimum="10" Maximum="42" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="StyleInput_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="140" Margin="0,0,14,8">
-                                        <TextBlock Text="Orijinal Renk" FontSize="12" Foreground="#94A3B8" />
+                                        <TextBlock x:Name="OrigColorLabelText" Text="Orijinal Renk" FontSize="12" Foreground="#94A3B8" />
                                         <controls:ColorFieldControl x:Name="OrigColorPicker" ColorChanged="StyleColor_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="145" Margin="0,0,14,8">
@@ -583,12 +735,12 @@
             </TabItem>
 
             <!-- SEKME 3: OBS ENTEGRASYONU -->
-            <TabItem Header="OBS">
+            <TabItem x:Name="MainTabObs" Header="OBS">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="Birincil Yöntem: OBS Tarayıcı Kaynağı (Şeffaf Arka Plan, Anlık SSE)" FontSize="15" FontWeight="Bold" Foreground="#38BDF8" />
+                                <TextBlock x:Name="ObsPrimaryHeaderText" Text="Birincil Yöntem: OBS Tarayıcı Kaynağı (Şeffaf Arka Plan, Anlık SSE)" FontSize="15" FontWeight="Bold" Foreground="#38BDF8" />
                                 <Grid Margin="0,10,0,12">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -605,31 +757,33 @@
                                              Background="#1E293B"
                                              Foreground="#38BDF8"
                                              BorderBrush="#334155" />
-                                    <Button Grid.Column="1" Content="Kopyala" Height="36" Padding="16,0" Margin="8,0,0,0" Background="#0284C7" Foreground="White" BorderThickness="0" FontWeight="Bold" Click="CopyObsUrl_Click" />
-                                    <Button Grid.Column="2" Content="Tarayıcıda Aç" Height="36" Padding="14,0" Margin="8,0,0,0" Background="#334155" Foreground="White" BorderThickness="0" Click="OpenObsInBrowser_Click" />
+                                    <Button x:Name="CopyObsUrlBtn" Grid.Column="1" Content="Kopyala" Height="36" Padding="16,0" Margin="8,0,0,0" Background="#0284C7" Foreground="White" BorderThickness="0" FontWeight="Bold" Click="CopyObsUrl_Click" />
+                                    <Button x:Name="OpenObsBrowserBtn" Grid.Column="2" Content="Tarayıcıda Aç" Height="36" Padding="14,0" Margin="8,0,0,0" Background="#334155" Foreground="White" BorderThickness="0" Click="OpenObsInBrowser_Click" />
                                 </Grid>
 
-                                <TextBlock Text="4 Adımda OBS Kurulumu:" FontWeight="SemiBold" Foreground="#F8FAFC" Margin="0,0,0,6" />
-                                <TextBlock Text="1. OBS Studio'da Kaynaklar bölümünden '+' (Kaynak Ekle) düğmesine basın.&#x0a;2. 'Tarayıcı' (Browser) kaynağını seçip 'Tamam' deyin.&#x0a;3. URL kutusuna yukarıdaki adresi yapıştırın.&#x0a;4. Genişlik / Yükseklik değerlerini OBS yayın tuvalinizin boyutuyla aynı yapın (ör. 1920 × 1080)."
+                                <TextBlock x:Name="ObsSetupTitleText" Text="4 Adımda OBS Kurulumu:" FontWeight="SemiBold" Foreground="#F8FAFC" Margin="0,0,0,6" />
+                                <TextBlock x:Name="ObsSetupStepsText"
+                                           Text="1. OBS Studio'da Kaynaklar bölümünden '+' (Kaynak Ekle) düğmesine basın.&#x0a;2. 'Tarayıcı' (Browser) kaynağını seçip 'Tamam' deyin.&#x0a;3. URL kutusuna yukarıdaki adresi yapıştırın.&#x0a;4. Genişlik / Yükseklik değerlerini OBS yayın tuvalinizin boyutuyla aynı yapın (ör. 1920 × 1080)."
                                            Foreground="#CBD5E1" FontSize="13" LineHeight="22" TextWrapping="Wrap" />
-                                <TextBlock Text="İpucu: Capture card gecikmesi nedeniyle görüntü altyazıdan geç geliyorsa OBS'te video yakalama kaynağınıza 'Render Delay' (İşleme Gecikmesi) filtresi ekleyebilirsiniz."
+                                <TextBlock x:Name="ObsSetupTipText"
+                                           Text="İpucu: Capture card gecikmesi nedeniyle görüntü altyazıdan geç geliyorsa OBS'te video yakalama kaynağınıza 'Render Delay' (İşleme Gecikmesi) filtresi ekleyebilirsiniz."
                                            Foreground="#94A3B8" FontSize="12" Margin="0,10,0,0" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="Ekran Altyazısı (Kendi Monitörünüzde İzleme İçin)" FontSize="14" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,8" />
+                                <TextBlock x:Name="ObsScreenMonitorHeaderText" Text="Ekran Altyazısı (Kendi Monitörünüzde İzleme İçin)" FontSize="14" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,8" />
                                 <CheckBox x:Name="ShowScreenOverlayCheck" Content="Ekranda şeffaf altyazı katmanını göster (tıklamalar oyuna geçer)" Checked="ObsOption_Changed" Unchecked="ObsOption_Changed" />
                             </StackPanel>
                         </Border>
 
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="16">
                             <StackPanel>
-                                <TextBlock Text="Yedek Yöntem: OBS Penceresi (Pencere Yakalama + Chroma Key)" FontSize="14" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,8" />
+                                <TextBlock x:Name="ObsChromaHeaderText" Text="Yedek Yöntem: OBS Penceresi (Pencere Yakalama + Chroma Key)" FontSize="14" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,8" />
                                 <CheckBox x:Name="ShowChromaWindowCheck" Content="Düz renkli OBS Chroma Key penceresini aç" Checked="ObsOption_Changed" Unchecked="ObsOption_Changed" Margin="0,0,0,10" />
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                    <TextBlock Text="Chroma Arka Plan Rengi:" Foreground="#CBD5E1" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                    <TextBlock x:Name="ObsChromaColorLabelText" Text="Chroma Arka Plan Rengi:" Foreground="#CBD5E1" VerticalAlignment="Center" Margin="0,0,10,0" />
                                     <controls:ColorFieldControl x:Name="ChromaColorPicker" ColorChanged="ChromaColor_Changed" />
                                 </StackPanel>
                             </StackPanel>
@@ -639,22 +793,22 @@
             </TabItem>
 
             <!-- SEKME 4: GELİŞMİŞ & TANI -->
-            <TabItem Header="Gelişmiş">
+            <TabItem x:Name="MainTabAdvanced" Header="Gelişmiş">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="Yerel Model ve Gecikme Ayarları" FontSize="14" FontWeight="Bold" Foreground="#38BDF8" Margin="0,0,0,10" />
+                                <TextBlock x:Name="AdvLocalHeaderText" Text="Yerel Model ve Gecikme Ayarları" FontSize="14" FontWeight="Bold" Foreground="#38BDF8" Margin="0,0,0,10" />
                                 <WrapPanel>
                                     <StackPanel Width="240" Margin="0,0,16,10">
-                                        <TextBlock Text="Model Niceleme (Kalite ↔ Hız)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="AdvQuantLabelText" Text="Model Niceleme (Kalite ↔ Hız)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <ComboBox x:Name="QuantSelectionCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
                                             <ComboBoxItem Content="Q8_0 (~3.85 GB — Yüksek Kalite, Varsayılan)" Tag="Q8_0" />
                                             <ComboBoxItem Content="Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)" Tag="Q4_K_M" />
                                         </ComboBox>
                                     </StackPanel>
                                     <StackPanel Width="200" Margin="0,0,16,10">
-                                        <TextBlock Text="GPU / Arka Uç" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="AdvBackendLabelText" Text="GPU / Arka Uç" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <ComboBox x:Name="BackendCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
                                             <ComboBoxItem Content="Otomatik (CUDA → Vulkan → CPU)" Tag="Auto" />
                                             <ComboBoxItem Content="CUDA" Tag="Cuda" />
@@ -663,7 +817,7 @@
                                         </ComboBox>
                                     </StackPanel>
                                     <StackPanel Width="170" Margin="0,0,16,10">
-                                        <TextBlock Text="Hız ↔ Kararlılık (Kare)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="AdvStabilityLabelText" Text="Hız ↔ Kararlılık (Kare)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <ComboBox x:Name="StabilityFramesCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
                                             <ComboBoxItem Content="1 Kare (En Hızlı)" Tag="1" />
                                             <ComboBoxItem Content="2 Kare (Dengeli)" Tag="2" />
@@ -671,7 +825,7 @@
                                         </ComboBox>
                                     </StackPanel>
                                     <StackPanel Width="160" Margin="0,0,16,10">
-                                        <TextBlock Text="CPU Thread Sayısı" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="AdvThreadsLabelText" Text="CPU Thread Sayısı" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <ComboBox x:Name="ThreadsCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
                                             <ComboBoxItem Content="2 Thread" Tag="2" />
                                             <ComboBoxItem Content="3 Thread" Tag="3" />
@@ -691,8 +845,8 @@
                                 </WrapPanel>
 
                                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                                    <Button Content="Kurulum Sihirbazını Aç" Padding="12,6" Margin="0,0,8,0" Background="#1E293B" Foreground="#E2E8F0" BorderBrush="#334155" BorderThickness="1" Click="OpenWizard_Click" />
-                                    <Button Content="Ayar &amp; Model Klasörünü Aç" Padding="12,6" Background="#1E293B" Foreground="#E2E8F0" BorderBrush="#334155" BorderThickness="1" Click="OpenDataFolder_Click" />
+                                    <Button x:Name="OpenWizardBtn" Content="Kurulum Sihirbazını Aç" Padding="12,6" Margin="0,0,8,0" Background="#1E293B" Foreground="#E2E8F0" BorderBrush="#334155" BorderThickness="1" Click="OpenWizard_Click" />
+                                    <Button x:Name="OpenDataFolderBtn" Content="Ayar &amp; Model Klasörünü Aç" Padding="12,6" Background="#1E293B" Foreground="#E2E8F0" BorderBrush="#334155" BorderThickness="1" Click="OpenDataFolder_Click" />
                                 </StackPanel>
                                 <TextBlock x:Name="OffloadStatusText" Text="" Foreground="#4ADE80" FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" />
                             </StackPanel>
@@ -702,8 +856,8 @@
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14">
                             <StackPanel>
                                 <Grid Margin="0,0,0,8">
-                                    <TextBlock Text="Tanı (Son 50 Satır Ortalama ve P95 Süreleri)" FontSize="14" FontWeight="Bold" Foreground="#38BDF8" VerticalAlignment="Center" />
-                                    <Button Content="Temizle" HorizontalAlignment="Right" Padding="10,4" Background="#334155" Foreground="White" BorderThickness="0" Click="ClearDiagnostics_Click" />
+                                    <TextBlock x:Name="DiagHeaderText" Text="Tanı (Son 50 Satır Ortalama ve P95 Süreleri)" FontSize="14" FontWeight="Bold" Foreground="#38BDF8" VerticalAlignment="Center" />
+                                    <Button x:Name="ClearDiagnosticsBtn" Content="Temizle" HorizontalAlignment="Right" Padding="10,4" Background="#334155" Foreground="White" BorderThickness="0" Click="ClearDiagnostics_Click" />
                                 </Grid>
                                 <TextBlock x:Name="DiagnosticsSummaryText"
                                            Text="Henüz ölçüm yok."
@@ -724,15 +878,15 @@
                                           HeadersVisibility="Column"
                                           BorderBrush="#334155">
                                     <DataGrid.Columns>
-                                        <DataGridTextColumn Header="Motor" Binding="{Binding Engine}" Width="120" />
-                                        <DataGridTextColumn Header="Kaynak" Binding="{Binding SourceTextPreview}" Width="*" />
-                                        <DataGridCheckBoxColumn Header="Önbellek" Binding="{Binding CacheHit}" Width="65" />
-                                        <DataGridTextColumn Header="Yakalama (ms)" Binding="{Binding CaptureMs}" Width="90" />
-                                        <DataGridTextColumn Header="OCR (ms)" Binding="{Binding OcrMs}" Width="75" />
-                                        <DataGridTextColumn Header="1. Token (ms)" Binding="{Binding FirstTokenMs}" Width="90" />
-                                        <DataGridTextColumn Header="Çeviri (ms)" Binding="{Binding TotalTranslateMs}" Width="85" />
-                                        <DataGridTextColumn Header="Gösterim (ms)" Binding="{Binding RenderMs}" Width="90" />
-                                        <DataGridTextColumn Header="Toplam (ms)" Binding="{Binding TotalEndToEndMs}" Width="90" />
+                                        <DataGridTextColumn x:Name="ColDiagEngine" Header="Motor" Binding="{Binding Engine}" Width="120" />
+                                        <DataGridTextColumn x:Name="ColDiagSource" Header="Kaynak" Binding="{Binding SourceTextPreview}" Width="*" />
+                                        <DataGridCheckBoxColumn x:Name="ColDiagCache" Header="Önbellek" Binding="{Binding CacheHit}" Width="65" />
+                                        <DataGridTextColumn x:Name="ColDiagCapture" Header="Yakalama (ms)" Binding="{Binding CaptureMs}" Width="90" />
+                                        <DataGridTextColumn x:Name="ColDiagOcr" Header="OCR (ms)" Binding="{Binding OcrMs}" Width="75" />
+                                        <DataGridTextColumn x:Name="ColDiagFirstToken" Header="1. Token (ms)" Binding="{Binding FirstTokenMs}" Width="90" />
+                                        <DataGridTextColumn x:Name="ColDiagTranslate" Header="Çeviri (ms)" Binding="{Binding TotalTranslateMs}" Width="85" />
+                                        <DataGridTextColumn x:Name="ColDiagRender" Header="Gösterim (ms)" Binding="{Binding RenderMs}" Width="90" />
+                                        <DataGridTextColumn x:Name="ColDiagTotal" Header="Toplam (ms)" Binding="{Binding TotalEndToEndMs}" Width="90" />
                                     </DataGrid.Columns>
                                 </DataGrid>
                             </StackPanel>
@@ -746,7 +900,8 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,12">
-                            <TextBlock Text="ℹ Sıfır Arka Plan Yükü: Ölçümler yalnızca bu 'Performans' sekmesi açıkken her 1.5 saniyede bir doğrudan süreç içi (in-process) Windows &amp; NVML API'lerinden okunur. Başka sekmeye geçildiğinde ölçüm zamanlayıcısı tamamen durdurulur (%0 ekstra CPU)."
+                            <TextBlock x:Name="PerfNoticeText"
+                                       Text="ℹ Sıfır Arka Plan Yükü: Ölçümler yalnızca bu 'Performans' sekmesi açıkken her 1.5 saniyede bir doğrudan süreç içi (in-process) Windows &amp; NVML API'lerinden okunur. Başka sekmeye geçildiğinde ölçüm zamanlayıcısı tamamen durdurulur (%0 ekstra CPU)."
                                        Foreground="#94A3B8"
                                        FontSize="12"
                                        TextWrapping="Wrap" />
@@ -764,7 +919,7 @@
                             <!-- CPU Kartı -->
                             <Border Grid.Column="0" Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14">
                                 <StackPanel>
-                                    <TextBlock Text="CPU Kullanımı" FontWeight="Bold" Foreground="#38BDF8" FontSize="13.5" />
+                                    <TextBlock x:Name="PerfCpuCardHeaderText" Text="CPU Kullanımı" FontWeight="Bold" Foreground="#38BDF8" FontSize="13.5" />
                                     <TextBlock x:Name="PerfTotalCpuText" Text="%0.0" FontSize="26" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,6" />
                                     <ProgressBar x:Name="PerfCpuBar" Height="8" Minimum="0" Maximum="100" Value="0" Foreground="#38BDF8" Background="#1E293B" Margin="0,0,0,10" />
                                     <TextBlock x:Name="PerfAppCpuText" Text="bitiq (Arayüz + OCR): %0.0" FontSize="12" Foreground="#CBD5E1" Margin="0,0,0,3" TextWrapping="Wrap" />
@@ -775,7 +930,7 @@
                             <!-- RAM Kartı -->
                             <Border Grid.Column="2" Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14">
                                 <StackPanel>
-                                    <TextBlock Text="RAM (Bellek) Kullanımı" FontWeight="Bold" Foreground="#4ADE80" FontSize="13.5" />
+                                    <TextBlock x:Name="PerfRamCardHeaderText" Text="RAM (Bellek) Kullanımı" FontWeight="Bold" Foreground="#4ADE80" FontSize="13.5" />
                                     <TextBlock x:Name="PerfTotalRamText" Text="0 MB" FontSize="26" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,6" />
                                     <ProgressBar x:Name="PerfRamBar" Height="8" Minimum="0" Maximum="8192" Value="0" Foreground="#4ADE80" Background="#1E293B" Margin="0,0,0,10" />
                                     <TextBlock x:Name="PerfAppRamText" Text="bitiq (Arayüz + OCR): 0 MB" FontSize="12" Foreground="#CBD5E1" Margin="0,0,0,3" TextWrapping="Wrap" />
@@ -786,7 +941,7 @@
                             <!-- GPU & VRAM Kartı -->
                             <Border Grid.Column="4" Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14">
                                 <StackPanel>
-                                    <TextBlock Text="GPU &amp; VRAM Kullanımı" FontWeight="Bold" Foreground="#C084FC" FontSize="13.5" />
+                                    <TextBlock x:Name="PerfGpuCardHeaderText" Text="GPU &amp; VRAM Kullanımı" FontWeight="Bold" Foreground="#C084FC" FontSize="13.5" />
                                     <TextBlock x:Name="PerfGpuLoadText" Text="—" FontSize="22" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,6,0,6" TextWrapping="Wrap" />
                                     <ProgressBar x:Name="PerfGpuBar" Height="8" Minimum="0" Maximum="100" Value="0" Foreground="#C084FC" Background="#1E293B" Margin="0,0,0,10" />
                                     <TextBlock x:Name="PerfGpuNameText" Text="GPU: Kontrol ediliyor…" FontSize="12" Foreground="#CBD5E1" Margin="0,0,0,3" TextWrapping="Wrap" />
@@ -802,7 +957,7 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,12,0">
-                                    <TextBlock Text="Yerel Model Süreç Durumu (llama-server)" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,4" />
+                                    <TextBlock x:Name="PerfLlamaStatusHeaderText" Text="Yerel Model Süreç Durumu (llama-server)" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,4" />
                                     <TextBlock x:Name="PerfEngineStatusText"
                                                Text="Durum: Kapalı (Bellek tüketmiyor)"
                                                Foreground="#CBD5E1"

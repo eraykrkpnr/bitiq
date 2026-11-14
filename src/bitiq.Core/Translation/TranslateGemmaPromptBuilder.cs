@@ -121,6 +121,6 @@ public static partial class TranslateGemmaPromptBuilder
         return string.Join("\n", lines);
     }
 
-    [GeneratedRegex(@"^(?:Here\s+is\s+the\s+(?:Turkish\s+)?translation\s*:|Turkish\s+translation\s*:|Translation\s*:|Çeviri\s*:)\s*", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(?:Here\s+is\s+the\s+(?:[A-Za-z]+\s+)?translation\s*:|(?:[A-Za-z]+\s+)?translation\s*:|Çeviri\s*:)\s*", RegexOptions.IgnoreCase)]
     private static partial Regex LeadingPreambleRegex();
 }

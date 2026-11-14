@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Bitiq.Core.Capture;
+using Bitiq.Core.Translation;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -20,7 +21,7 @@ public sealed record OcrFrameResult(
 /// </summary>
 public sealed class WindowsOcrService : IDisposable
 {
-    private readonly OcrEngine? _engine;
+    private volatile OcrEngine? _engine;
     private readonly SemaphoreSlim _signal = new(0, 1);
     private readonly CancellationTokenSource _cts = new();
     private readonly object _glyphCacheLock = new();
@@ -36,22 +37,165 @@ public sealed class WindowsOcrService : IDisposable
     private string _lastOcrResult = string.Empty;
 
     public bool IsAvailable => _engine is not null;
-    public string? ActiveLanguageTag { get; }
-    public OcrCheckResult Status { get; }
+    public string? ActiveLanguageTag { get; private set; }
+    public OcrCheckResult Status { get; private set; } = new(false, null, null, null);
+    public string ActiveSourceLanguageCode { get; private set; } = "en";
 
     public event Action<OcrFrameResult>? TextRecognized;
     public event Action<string>? ErrorOccurred;
 
-    public WindowsOcrService(bool preprocessEnabled = false)
+    public WindowsOcrService(bool preprocessEnabled = false, string sourceLanguageCode = "en")
     {
         _preprocessEnabled = preprocessEnabled;
-        Status = CheckEnglishOcrAvailability(out var engine);
-        _engine = engine;
-        ActiveLanguageTag = Status.LanguageTag;
+        Status = SetSourceLanguage(sourceLanguageCode);
+        _ = Task.Run(() => WorkerLoopAsync(_cts.Token));
+    }
 
-        if (_engine is not null)
+    public OcrCheckResult SetSourceLanguage(string langCode)
+    {
+        var descriptor = LanguageCatalog.GetByCode(langCode);
+        bool isEnglish = string.Equals(descriptor.Code, "en", StringComparison.OrdinalIgnoreCase);
+        SubtitleStabilizer.IsEnglishSourceMode = isEnglish;
+
+        OcrEngine? newEngine;
+        OcrCheckResult result;
+
+        if (isEnglish)
         {
-            _ = Task.Run(() => WorkerLoopAsync(_cts.Token));
+            result = CheckEnglishOcrAvailability(out newEngine);
+        }
+        else if (IsLanguageOcrInstalled(descriptor.Code, out var matchedLang) && matchedLang is not null)
+        {
+            newEngine = OcrEngine.TryCreateFromLanguage(matchedLang);
+            result = newEngine is not null
+                ? new OcrCheckResult(true, matchedLang.LanguageTag, null, null)
+                : new OcrCheckResult(
+                    false,
+                    null,
+                    $"Windows {descriptor.NameTr} ({descriptor.OcrCapabilityTag}) OCR motoru başlatılamadı.",
+                    $"Add-WindowsCapability -Online -Name Language.OCR~~~{descriptor.OcrCapabilityTag}~0.0.1.0");
+        }
+        else
+        {
+            newEngine = null;
+            result = new OcrCheckResult(
+                false,
+                null,
+                $"Windows {descriptor.NameTr} ({descriptor.OcrCapabilityTag}) OCR dil paketi yüklü değil.",
+                $"Add-WindowsCapability -Online -Name Language.OCR~~~{descriptor.OcrCapabilityTag}~0.0.1.0");
+        }
+
+        _engine = newEngine;
+        ActiveSourceLanguageCode = descriptor.Code;
+        ActiveLanguageTag = result.LanguageTag;
+        Status = result;
+        ResetGlyphCache();
+        return result;
+    }
+
+    public static bool IsLanguageOcrInstalled(string langCode, out Language? matchedRecognizerLanguage)
+    {
+        matchedRecognizerLanguage = null;
+        var descriptor = LanguageCatalog.GetByCode(langCode);
+        try
+        {
+            var available = OcrEngine.AvailableRecognizerLanguages;
+            var exact = available.FirstOrDefault(l =>
+                l.LanguageTag.Equals(descriptor.OcrCapabilityTag, StringComparison.OrdinalIgnoreCase));
+            var prefix = exact ?? available.FirstOrDefault(l =>
+                l.LanguageTag.Equals(descriptor.Code, StringComparison.OrdinalIgnoreCase)
+                || l.LanguageTag.StartsWith(descriptor.Code + "-", StringComparison.OrdinalIgnoreCase));
+
+            if (prefix is not null && OcrEngine.TryCreateFromLanguage(prefix) is not null)
+            {
+                matchedRecognizerLanguage = prefix;
+                return true;
+            }
+
+            var cand = new Language(descriptor.OcrCapabilityTag);
+            if (OcrEngine.IsLanguageSupported(cand) && OcrEngine.TryCreateFromLanguage(cand) is not null)
+            {
+                matchedRecognizerLanguage = cand;
+                return true;
+            }
+        }
+        catch { }
+
+        return false;
+    }
+
+    public static async Task<(bool Success, string Message)> InstallOcrLanguagePackAsync(
+        string langCode,
+        bool isEnglishUi,
+        CancellationToken ct = default)
+    {
+        var descriptor = LanguageCatalog.GetByCode(langCode);
+        if (IsLanguageOcrInstalled(descriptor.Code, out _))
+        {
+            return (true, isEnglishUi
+                ? $"{descriptor.NameEn} OCR pack is already installed."
+                : $"{descriptor.NameTr} OCR paketi zaten yüklü.");
+        }
+
+        string exactCapability = $"Language.OCR~~~{descriptor.OcrCapabilityTag}~0.0.1.0";
+        string langPrefix = $"Language.OCR~~~{descriptor.Code}-";
+        string psScript =
+            $"$ErrorActionPreference='Stop'; " +
+            $"try {{ Add-WindowsCapability -Online -Name '{exactCapability}' | Out-Null }} " +
+            $"catch {{ " +
+            $"$cap = Get-WindowsCapability -Online -Name 'Language.OCR*' | Where-Object {{ $_.Name -like '{langPrefix}*' }} | Select-Object -First 1; " +
+            $"if ($null -eq $cap) {{ throw }}; " +
+            $"Add-WindowsCapability -Online -Name $cap.Name | Out-Null " +
+            $"}}";
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{psScript}\"",
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            using var proc = Process.Start(psi);
+            if (proc is null)
+            {
+                return (false, isEnglishUi
+                    ? "Could not launch Windows OCR capability installer."
+                    : "Windows OCR paket yükleyicisi başlatılamadı.");
+            }
+
+            await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+            await Task.Delay(250, ct).ConfigureAwait(false);
+
+            if (IsLanguageOcrInstalled(descriptor.Code, out _))
+            {
+                return (true, isEnglishUi
+                    ? $"{descriptor.NameEn} OCR language pack installed and activated."
+                    : $"{descriptor.NameTr} OCR dil paketi kuruldu ve aktifleştirildi.");
+            }
+
+            return (false, isEnglishUi
+                ? $"OCR installer exited (code {proc.ExitCode}), but {descriptor.NameEn} OCR is not active yet. You can also install it from Windows Settings → Time & language → Language & region."
+                : $"OCR yükleyicisi tamamlandı (kod {proc.ExitCode}), ancak {descriptor.NameTr} OCR henüz aktif görünmüyor. Windows Ayarları → Zaman ve Dil → Dil ve Bölge kısmından da yükleyebilirsiniz.");
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            return (false, isEnglishUi
+                ? "Administrator permission (UAC) was cancelled."
+                : "Yönetici izni (UAC) iptal edildi.");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return (false, isEnglishUi
+                ? $"OCR pack installation failed: {ex.Message}"
+                : $"OCR paketi kurulamadı: {ex.Message}");
         }
     }
 
@@ -214,18 +358,119 @@ public sealed class WindowsOcrService : IDisposable
                 return cachedText;
 
             string processedText = await RecognizeBufferAsync(processedBytes, targetW, targetH).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(processedText))
+            int procScore = ScoreOcrCandidate(processedText, out int procClean, out int procGarbage);
+
+            // Temiz okuma alındıysa ikinci OCR geçişine gerek kalmadan doğrudan önbellekle ve dön
+            if (!string.IsNullOrWhiteSpace(processedText) && procGarbage == 0 && procClean > 0 && procScore > 0)
             {
                 UpdateGlyphCache(glyphGrid, width, height, processedText);
                 return processedText;
             }
+
+            // Ön işleme boş döndüyse veya bozuk kelime ürettiyse, 2x büyütülmüş ham kare ile karşılaştırıp daha temizini seç
+            string fallbackText = await RecognizeFallbackAsync(bgraPixels, width, height).ConfigureAwait(false);
+            int fallScore = ScoreOcrCandidate(fallbackText, out int fallClean, out int fallGarbage);
+
+            string chosen = ChooseBetterOcrResult(
+                processedText, procScore,
+                fallbackText, fallScore,
+                out int chosenClean, out int chosenGarbage);
+
+            if (!string.IsNullOrWhiteSpace(chosen) && chosenGarbage == 0 && chosenClean > 0)
+                UpdateGlyphCache(glyphGrid, width, height, chosen);
+            else if (string.IsNullOrWhiteSpace(chosen))
+                ResetGlyphCache();
+
+            return chosen;
         }
 
-        // Ön işleme kapalıysa veya boş döndüyse (ör. kontursuz düz renk yazı) ham karede dene
-        string rawText = await RecognizeBufferAsync(bgraPixels, width, height).ConfigureAwait(false);
+        // Ön işleme kapalıysa küçük karelerde 2x bicubic ile oku
+        string rawText = await RecognizeFallbackAsync(bgraPixels, width, height).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(rawText))
             ResetGlyphCache();
         return rawText;
+    }
+
+    private Task<string> RecognizeFallbackAsync(byte[] bgraPixels, int width, int height)
+    {
+        if (height < 120 && width is >= 8 and <= 1920)
+        {
+            byte[] upscaled = UpscaleBgraBicubic2x(bgraPixels, width, height, out int upW, out int upH);
+            return RecognizeBufferAsync(upscaled, upW, upH);
+        }
+
+        return RecognizeBufferAsync(bgraPixels, width, height);
+    }
+
+    private static int ScoreOcrCandidate(string text, out int cleanWords, out int garbageWords)
+    {
+        cleanWords = 0;
+        garbageWords = 0;
+        if (string.IsNullOrWhiteSpace(text))
+            return -999;
+
+        SubtitleStabilizer.ComputeWordQuality(text, out cleanWords, out garbageWords, out _);
+
+        int extraPenalty = 0;
+        if (SubtitleStabilizer.IsEnglishSourceMode)
+        {
+            // İngilizce OCR sırasında arka plan parazitinden doğan İskandinav/aksan halüsinasyonlarını ve eşleşmemiş tırnakları cezalandır
+            int quoteCount = 0;
+            foreach (char ch in text)
+            {
+                if (ch == '"')
+                    quoteCount++;
+                else if (ch is 'æ' or 'Æ' or 'ø' or 'Ø' or 'å' or 'Å' or 'ä' or 'Ä' or 'ö' or 'Ö' or 'ü' or 'Ü' or 'þ' or 'Þ' or 'ß' or '\u201E' or '•')
+                    extraPenalty += 3;
+            }
+            if ((quoteCount & 1) == 1)
+                extraPenalty += 2;
+        }
+
+        return (cleanWords * 3) - (garbageWords * 5) - extraPenalty;
+    }
+
+    private static string ChooseBetterOcrResult(
+        string procText, int procScore,
+        string fallText, int fallScore,
+        out int chosenClean, out int chosenGarbage)
+    {
+        bool hasProc = !string.IsNullOrWhiteSpace(procText);
+        bool hasFall = !string.IsNullOrWhiteSpace(fallText);
+
+        string chosen;
+        if (!hasProc && !hasFall)
+        {
+            chosen = string.Empty;
+        }
+        else if (!hasFall)
+        {
+            chosen = procText;
+        }
+        else if (!hasProc)
+        {
+            chosen = fallText;
+        }
+        else if (fallScore > procScore || (fallScore == procScore && fallText.Length > procText.Length))
+        {
+            chosen = fallText;
+        }
+        else
+        {
+            chosen = procText;
+        }
+
+        if (string.IsNullOrEmpty(chosen))
+        {
+            chosenClean = 0;
+            chosenGarbage = 0;
+        }
+        else
+        {
+            SubtitleStabilizer.ComputeWordQuality(chosen, out chosenClean, out chosenGarbage, out _);
+        }
+
+        return chosen;
     }
 
     private bool TryReuseCachedOcrResult(byte[] glyphGrid, int width, int height, out string cachedText)
@@ -287,17 +532,96 @@ public sealed class WindowsOcrService : IDisposable
 
     private async Task<string> RecognizeBufferAsync(byte[] bgraPixels, int width, int height)
     {
-        if (_engine is null)
+        var engine = _engine;
+        if (engine is null)
             return string.Empty;
 
         using var bitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Premultiplied);
         CopyPixelsIntoSoftwareBitmap(bitmap, bgraPixels);
 
-        var result = await _engine.RecognizeAsync(bitmap).AsTask().ConfigureAwait(false);
+        var result = await engine.RecognizeAsync(bitmap).AsTask().ConfigureAwait(false);
         if (result?.Lines is null || result.Lines.Count == 0)
             return string.Empty;
 
-        return JoinOcrLines(result.Lines.Select(l => l.Text.Trim()).Where(t => t.Length > 0).ToList());
+        return JoinOcrLines(OrderOcrLinesTopToBottomLeftToRight(result.Lines));
+    }
+
+    private static List<string> OrderOcrLinesTopToBottomLeftToRight(IReadOnlyList<OcrLine> ocrLines)
+    {
+        var fragments = new List<(double CenterY, double MinX, double Height, string Text)>(ocrLines.Count);
+        foreach (var line in ocrLines)
+        {
+            string trimmed = line.Text.Trim();
+            if (trimmed.Length == 0)
+                continue;
+
+            double minX = double.MaxValue;
+            double sumCenterY = 0;
+            double maxH = 0;
+            int wordCount = 0;
+            foreach (var word in line.Words)
+            {
+                var rect = word.BoundingRect;
+                if (rect.X < minX)
+                    minX = rect.X;
+                sumCenterY += rect.Y + (rect.Height * 0.5);
+                if (rect.Height > maxH)
+                    maxH = rect.Height;
+                wordCount++;
+            }
+
+            if (wordCount == 0)
+                fragments.Add((0, 0, 20, trimmed));
+            else
+                fragments.Add((sumCenterY / wordCount, minX, maxH, trimmed));
+        }
+
+        if (fragments.Count <= 1)
+            return fragments.Select(f => f.Text).ToList();
+
+        fragments.Sort((a, b) => a.CenterY.CompareTo(b.CenterY));
+
+        var rows = new List<(double AvgY, double MaxH, List<(double MinX, string Text)> Items)>();
+        foreach (var frag in fragments)
+        {
+            bool placed = false;
+            for (int r = 0; r < rows.Count; r++)
+            {
+                var row = rows[r];
+                double tolerance = Math.Max(10.0, Math.Max(row.MaxH, frag.Height) * 0.65);
+                if (Math.Abs(frag.CenterY - row.AvgY) <= tolerance)
+                {
+                    int n = row.Items.Count;
+                    double newAvgY = ((row.AvgY * n) + frag.CenterY) / (n + 1);
+                    row.Items.Add((frag.MinX, frag.Text));
+                    rows[r] = (newAvgY, Math.Max(row.MaxH, frag.Height), row.Items);
+                    placed = true;
+                    break;
+                }
+            }
+
+            if (!placed)
+            {
+                rows.Add((frag.CenterY, frag.Height, [(frag.MinX, frag.Text)]));
+            }
+        }
+
+        rows.Sort((a, b) => a.AvgY.CompareTo(b.AvgY));
+        var ordered = new List<string>(rows.Count);
+        foreach (var row in rows)
+        {
+            if (row.Items.Count == 1)
+            {
+                ordered.Add(row.Items[0].Text);
+            }
+            else
+            {
+                row.Items.Sort((a, b) => a.MinX.CompareTo(b.MinX));
+                ordered.Add(string.Join(" ", row.Items.Select(x => x.Text)));
+            }
+        }
+
+        return ordered;
     }
 
     public static string JoinOcrLines(IReadOnlyList<string> lines)
@@ -399,6 +723,9 @@ public sealed class WindowsOcrService : IDisposable
         {
             if (char.IsLetter(ch))
             {
+                if (!SubtitleStabilizer.IsEnglishSourceMode && ch >= '\u2E80')
+                    return true;
+
                 count++;
                 if (count >= 2)
                     return true;
@@ -427,9 +754,8 @@ public sealed class WindowsOcrService : IDisposable
         => PreprocessSubtitleRegionCore(src, w, h, out outW, out outH, out _);
 
     /// <summary>
-    /// Arka plansız altyazılar için kenar tohumlu flood-fill arka plan bastırma,
-    /// renk doygunluğu temizleme, küçük boyutta bilinear 1.5x büyütme ve 24px koyu kenar boşluğu ekler.
-    /// Harflerin siyah dış konturu baraj görevi görür, anti-aliasing harf pikselleri korunur.
+    /// Küçük alt yazı bölgelerini Catmull-Rom bicubic ile 2x büyütür, yerel medyan arka plan tahmini
+    /// ve koyu gölge ağırlığı ile arka plansız beyaz yazıları parlak/hareketli sahnelerden ayırır.
     /// Ayrıca arka plan oynarken harflerin değişip değişmediğini anlamak için 64x16 harf maskesi üretir.
     /// </summary>
     private static unsafe byte[] PreprocessSubtitleRegionCore(
@@ -443,8 +769,8 @@ public sealed class WindowsOcrService : IDisposable
         const int pad = 24;
         const byte darkBgValue = 20;
 
-        int total = w * h;
-        if (w <= 0 || h <= 0 || src.Length < total * 4)
+        int srcTotal = w * h;
+        if (w <= 0 || h <= 0 || src.Length < srcTotal * 4)
         {
             outW = w;
             outH = h;
@@ -452,171 +778,463 @@ public sealed class WindowsOcrService : IDisposable
             return src;
         }
 
-        var lum = new byte[total];
-        var sat = new byte[total];
-        fixed (byte* pSrc = src)
-        fixed (byte* pLum = lum)
-        fixed (byte* pSat = sat)
+        bool upscale = h < 120 && w <= 1920;
+        int sw, sh;
+        byte[] workBgra;
+        if (upscale)
         {
-            for (int i = 0; i < total; i++)
-            {
-                byte* sp = pSrc + (i * 4);
-                byte b = sp[0];
-                byte g = sp[1];
-                byte r = sp[2];
-                byte max = Math.Max(r, Math.Max(g, b));
-                byte min = Math.Min(r, Math.Min(g, b));
-                pLum[i] = (byte)((b * 29 + g * 150 + r * 77) >> 8);
-                pSat[i] = (byte)(max - min);
-            }
+            workBgra = UpscaleBgraBicubic2x(src, w, h, out sw, out sh);
+        }
+        else
+        {
+            workBgra = src;
+            sw = w;
+            sh = h;
         }
 
-        // 0. İnce gölgeli / hafif konturlu beyaz harfleri flood-fill sızmasına karşı koru
-        var protectedGlyph = MarkProtectedWhiteGlyphs(lum, sat, w, h);
+        int ds = (upscale || h < 120) ? 2 : 3;
+        int halfW = Math.Max(1, w / ds);
+        int halfH = Math.Max(1, h / ds);
 
-        var visitedBg = new bool[total];
-        var queue = new int[total];
-        int qHead = 0, qTail = 0;
+        byte[] wHalf = ComputeDownsampledWhiteness(src, w, h, ds, halfW, halfH);
+        byte[] bgHalf = ApplyMedian7x7(wHalf, halfW, halfH);
 
-        void SeedIndex(int idx)
+        int workTotal = sw * sh;
+        var whitenessWork = System.Buffers.ArrayPool<byte>.Shared.Rent(workTotal);
+        var lumWork = System.Buffers.ArrayPool<byte>.Shared.Rent(workTotal);
+        var localMin = System.Buffers.ArrayPool<byte>.Shared.Rent(workTotal);
+        var cleaned = System.Buffers.ArrayPool<byte>.Shared.Rent(workTotal);
+
+        try
         {
-            if (!visitedBg[idx] && !protectedGlyph[idx])
+            fixed (byte* pWork = workBgra)
+            fixed (byte* pWhite = whitenessWork)
+            fixed (byte* pLum = lumWork)
             {
-                visitedBg[idx] = true;
-                queue[qTail++] = idx;
+                for (int i = 0; i < workTotal; i++)
+                {
+                    byte* sp = pWork + (i * 4);
+                    byte b = sp[0];
+                    byte g = sp[1];
+                    byte r = sp[2];
+                    byte max = Math.Max(r, Math.Max(g, b));
+                    byte min = Math.Min(r, Math.Min(g, b));
+                    int wVal = min - (((max - min) * 3) >> 1);
+                    pWhite[i] = wVal <= 0 ? (byte)0 : (byte)wVal;
+                    pLum[i] = (byte)(((r * 299) + (g * 587) + (b * 114)) / 1000);
+                }
             }
-        }
 
-        const byte floodLumThreshold = 132;
+            ComputeSeparableMin(lumWork, localMin, sw, sh, radius: upscale ? 3 : 2);
 
-        // 1. Üst ve alt kenarda yalnızca geniş (> 6 px) parlak şeritleri tohumla (kenara değen harfleri koru)
-        SeedHorizontalRuns(lum, w, 0, minRunLen: 7, lumThreshold: floodLumThreshold, SeedIndex);
-        if (h > 1)
-            SeedHorizontalRuns(lum, w, h - 1, minRunLen: 7, lumThreshold: floodLumThreshold, SeedIndex);
+            outW = sw + (pad * 2);
+            outH = sh + (pad * 2);
+            var dst = new byte[outW * outH * 4];
+            uint bgPixel = 0xFF000000u | ((uint)darkBgValue << 16) | ((uint)darkBgValue << 8) | darkBgValue;
 
-        // 2. Sol ve sağ kenardaki geniş (> 6 px) parlak şeritleri tohumla
-        SeedVerticalRuns(lum, w, h, 0, minRunLen: 7, lumThreshold: floodLumThreshold, SeedIndex);
-        if (w > 1)
-            SeedVerticalRuns(lum, w, h, w - 1, minRunLen: 7, lumThreshold: floodLumThreshold, SeedIndex);
+            var hx0Arr = new int[sw];
+            var hx1Arr = new int[sw];
+            var wxArr = new float[sw];
+            double scaleX = (double)halfW / sw;
+            double scaleY = (double)halfH / sh;
 
-        // 3. İçerideki çok geniş parlak arka plan şeritlerini tohumla (> max(42, h) px hiçbir tek harf kesiti olamaz)
-        int maxGlyphRun = Math.Max(42, h);
-        for (int y = 1; y < h - 1; y++)
-        {
-            SeedHorizontalRuns(lum, w, y, minRunLen: maxGlyphRun + 1, lumThreshold: 140, SeedIndex);
-        }
-
-        // 4. 4-yönlü Flood-Fill: koyu altyazı konturu (lum <= 132) ve korumalı beyaz harf pikselleri baraj görevi görür
-        while (qHead < qTail)
-        {
-            int cur = queue[qHead++];
-            int cx = cur % w;
-            int cy = cur / w;
-
-            if (cx > 0) TryEnqueue(cur - 1);
-            if (cx + 1 < w) TryEnqueue(cur + 1);
-            if (cy > 0) TryEnqueue(cur - w);
-            if (cy + 1 < h) TryEnqueue(cur + w);
-        }
-
-        void TryEnqueue(int nIdx)
-        {
-            if (!visitedBg[nIdx] && !protectedGlyph[nIdx] && lum[nIdx] > floodLumThreshold)
+            for (int x = 0; x < sw; x++)
             {
-                visitedBg[nIdx] = true;
-                queue[qTail++] = nIdx;
+                double hx = Math.Clamp(((x + 0.5) * scaleX) - 0.5, 0.0, halfW - 1);
+                int ix0 = (int)hx;
+                int ix1 = Math.Min(halfW - 1, ix0 + 1);
+                hx0Arr[x] = ix0;
+                hx1Arr[x] = ix1;
+                wxArr[x] = (float)(hx - ix0);
             }
-        }
 
-        var cleaned = new byte[total];
-        for (int i = 0; i < total; i++)
-        {
-            byte l = lum[i];
-            byte s = sat[i];
-            if (visitedBg[i] || (!protectedGlyph[i] && s > 55 && l < 230))
+            fixed (byte* pBgHalf = bgHalf)
+            fixed (byte* pWhite = whitenessWork)
+            fixed (byte* pLum = lumWork)
+            fixed (byte* pMin = localMin)
+            fixed (byte* pClean = cleaned)
+            fixed (byte* pDst = dst)
+            fixed (int* pHx0 = hx0Arr)
+            fixed (int* pHx1 = hx1Arr)
+            fixed (float* pWx = wxArr)
             {
-                cleaned[i] = darkBgValue;
-            }
-            else if (protectedGlyph[i])
-            {
-                cleaned[i] = l >= 175
-                    ? (byte)255
-                    : l >= 115
-                        ? (byte)Math.Clamp(140 + ((l - 115) * 115 / 60), 140, 254)
-                        : l;
-            }
-            else
-            {
-                cleaned[i] = l;
-            }
-        }
+                uint* pDst32 = (uint*)pDst;
+                int outTotal = outW * outH;
+                for (int i = 0; i < outTotal; i++)
+                    pDst32[i] = bgPixel;
 
-        glyphGrid = BuildGlyphGrid(cleaned, w, h);
-
-        bool upscale = h < 96;
-        double scale = upscale ? 1.5 : 1.0;
-        int sw = upscale ? (int)Math.Round(w * scale) : w;
-        int sh = upscale ? (int)Math.Round(h * scale) : h;
-        outW = sw + (pad * 2);
-        outH = sh + (pad * 2);
-
-        var dst = new byte[outW * outH * 4];
-        uint bgPixel = 0xFF000000u | ((uint)darkBgValue << 16) | ((uint)darkBgValue << 8) | darkBgValue;
-
-        fixed (byte* pClean = cleaned)
-        fixed (byte* pDst = dst)
-        {
-            uint* pDst32 = (uint*)pDst;
-            int outTotal = outW * outH;
-            for (int i = 0; i < outTotal; i++)
-                pDst32[i] = bgPixel;
-
-            if (!upscale)
-            {
                 for (int y = 0; y < sh; y++)
                 {
-                    byte* cRow = pClean + (y * w);
+                    double hy = Math.Clamp(((y + 0.5) * scaleY) - 0.5, 0.0, halfH - 1);
+                    int iy0 = (int)hy;
+                    int iy1 = Math.Min(halfH - 1, iy0 + 1);
+                    float wy = (float)(hy - iy0);
+                    float wy0 = 1.0f - wy;
+
+                    byte* bgRow0 = pBgHalf + (iy0 * halfW);
+                    byte* bgRow1 = pBgHalf + (iy1 * halfW);
+                    int rowBase = y * sw;
                     uint* dRow = pDst32 + ((y + pad) * outW) + pad;
+
                     for (int x = 0; x < sw; x++)
                     {
-                        uint v = cRow[x];
+                        int ix0 = pHx0[x];
+                        int ix1 = pHx1[x];
+                        float wx = pWx[x];
+                        float wx0 = 1.0f - wx;
+
+                        float topBg = (bgRow0[ix0] * wx0) + (bgRow0[ix1] * wx);
+                        float botBg = (bgRow1[ix0] * wx0) + (bgRow1[ix1] * wx);
+                        float bg = (topBg * wy0) + (botBg * wy);
+
+                        int idx = rowBase + x;
+                        float bgFloor = bg > 60f ? bg : 60f;
+                        float diffFromBg = pWhite[idx] - bgFloor;
+
+                        byte val;
+                        if (diffFromBg <= 0f)
+                        {
+                            val = darkBgValue;
+                        }
+                        else
+                        {
+                            float headroom = 255f - bgFloor;
+                            if (headroom < 40f)
+                                headroom = 40f;
+
+                            float score = diffFromBg / headroom;
+                            if (score > 1f)
+                                score = 1f;
+
+                            if (bg > 110f)
+                            {
+                                float shadowWeight = (pLum[idx] - pMin[idx] - 25f) * (1f / 40f);
+                                if (shadowWeight <= 0f)
+                                    score = 0f;
+                                else if (shadowWeight < 1f)
+                                    score *= shadowWeight;
+                            }
+
+                            int scaled = (int)(20.5f + (score * 235f));
+                            val = (byte)Math.Clamp(scaled, darkBgValue, 255);
+                        }
+
+                        pClean[idx] = val;
+                        uint v = val;
                         dRow[x] = 0xFF000000u | (v << 16) | (v << 8) | v;
                     }
                 }
             }
-            else
+
+            glyphGrid = BuildGlyphGrid(cleaned, sw, sh);
+            return dst;
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(whitenessWork);
+            System.Buffers.ArrayPool<byte>.Shared.Return(lumWork);
+            System.Buffers.ArrayPool<byte>.Shared.Return(localMin);
+            System.Buffers.ArrayPool<byte>.Shared.Return(cleaned);
+        }
+    }
+
+    private static unsafe byte[] UpscaleBgraBicubic2x(byte[] src, int w, int h, out int outW, out int outH)
+    {
+        outW = w * 2;
+        outH = h * 2;
+        var dst = new byte[outW * outH * 4];
+        byte[] horiz = System.Buffers.ArrayPool<byte>.Shared.Rent(outW * h * 4);
+
+        try
+        {
+            int srcStride = w * 4;
+            int horizStride = outW * 4;
+
+            fixed (byte* pSrc = src)
+            fixed (byte* pHoriz = horiz)
+            fixed (byte* pDst = dst)
             {
-                double invScale = 1.0 / scale;
-                for (int y = 0; y < sh; y++)
+                // Yatay Catmull-Rom 2x geçişi: [-3, 29, 111, -9]/128 ve [-9, 111, 29, -3]/128
+                for (int y = 0; y < h; y++)
                 {
-                    double sy = Math.Min(h - 1, y * invScale);
-                    int y0 = (int)sy;
-                    int y1 = Math.Min(h - 1, y0 + 1);
-                    double wy = sy - y0;
-                    double wy0 = 1.0 - wy;
+                    byte* sRow = pSrc + (y * srcStride);
+                    byte* hRow = pHoriz + (y * horizStride);
 
-                    byte* row0 = pClean + (y0 * w);
-                    byte* row1 = pClean + (y1 * w);
-                    uint* dRow = pDst32 + ((y + pad) * outW) + pad;
-
-                    for (int x = 0; x < sw; x++)
+                    int kEndSafe = w - 2;
+                    int kHeadEnd = Math.Min(w, 2);
+                    for (int k = 0; k < kHeadEnd; k++)
                     {
-                        double sx = Math.Min(w - 1, x * invScale);
-                        int x0 = (int)sx;
-                        int x1 = Math.Min(w - 1, x0 + 1);
-                        double wx = sx - x0;
-                        double wx0 = 1.0 - wx;
-
-                        double topVal = (row0[x0] * wx0) + (row0[x1] * wx);
-                        double botVal = (row1[x0] * wx0) + (row1[x1] * wx);
-                        uint v = (uint)Math.Clamp((int)Math.Round((topVal * wy0) + (botVal * wy)), 0, 255);
-                        dRow[x] = 0xFF000000u | (v << 16) | (v << 8) | v;
+                        InterpolateHorizPair(sRow, hRow, k, w);
                     }
+
+                    for (int k = 2; k < kEndSafe; k++)
+                    {
+                        byte* p0 = sRow + ((k - 2) * 4);
+                        byte* p1 = p0 + 4;
+                        byte* p2 = p0 + 8;
+                        byte* p3 = p0 + 12;
+                        byte* p4 = p0 + 16;
+                        byte* d0 = hRow + (k * 8);
+                        byte* d1 = d0 + 4;
+
+                        d0[0] = ClampByte((-3 * p0[0] + 29 * p1[0] + 111 * p2[0] - 9 * p3[0] + 64) >> 7);
+                        d0[1] = ClampByte((-3 * p0[1] + 29 * p1[1] + 111 * p2[1] - 9 * p3[1] + 64) >> 7);
+                        d0[2] = ClampByte((-3 * p0[2] + 29 * p1[2] + 111 * p2[2] - 9 * p3[2] + 64) >> 7);
+                        d0[3] = 255;
+
+                        d1[0] = ClampByte((-9 * p1[0] + 111 * p2[0] + 29 * p3[0] - 3 * p4[0] + 64) >> 7);
+                        d1[1] = ClampByte((-9 * p1[1] + 111 * p2[1] + 29 * p3[1] - 3 * p4[1] + 64) >> 7);
+                        d1[2] = ClampByte((-9 * p1[2] + 111 * p2[2] + 29 * p3[2] - 3 * p4[2] + 64) >> 7);
+                        d1[3] = 255;
+                    }
+
+                    for (int k = Math.Max(kHeadEnd, kEndSafe); k < w; k++)
+                    {
+                        InterpolateHorizPair(sRow, hRow, k, w);
+                    }
+                }
+
+                // Dikey Catmull-Rom 2x geçişi
+                for (int ky = 0; ky < h; ky++)
+                {
+                    byte* r0 = pHoriz + (Math.Clamp(ky - 2, 0, h - 1) * horizStride);
+                    byte* r1 = pHoriz + (Math.Clamp(ky - 1, 0, h - 1) * horizStride);
+                    byte* r2 = pHoriz + (ky * horizStride);
+                    byte* r3 = pHoriz + (Math.Clamp(ky + 1, 0, h - 1) * horizStride);
+                    byte* r4 = pHoriz + (Math.Clamp(ky + 2, 0, h - 1) * horizStride);
+
+                    byte* dRow0 = pDst + ((ky * 2) * horizStride);
+                    byte* dRow1 = dRow0 + horizStride;
+
+                    for (int off = 0; off < horizStride; off += 4)
+                    {
+                        byte c0B = ClampByte((-3 * r0[off] + 29 * r1[off] + 111 * r2[off] - 9 * r3[off] + 64) >> 7);
+                        byte c0G = ClampByte((-3 * r0[off + 1] + 29 * r1[off + 1] + 111 * r2[off + 1] - 9 * r3[off + 1] + 64) >> 7);
+                        byte c0R = ClampByte((-3 * r0[off + 2] + 29 * r1[off + 2] + 111 * r2[off + 2] - 9 * r3[off + 2] + 64) >> 7);
+
+                        dRow0[off] = c0B;
+                        dRow0[off + 1] = c0G;
+                        dRow0[off + 2] = c0R;
+                        dRow0[off + 3] = 255;
+
+                        byte c1B = ClampByte((-9 * r1[off] + 111 * r2[off] + 29 * r3[off] - 3 * r4[off] + 64) >> 7);
+                        byte c1G = ClampByte((-9 * r1[off + 1] + 111 * r2[off + 1] + 29 * r3[off + 1] - 3 * r4[off + 1] + 64) >> 7);
+                        byte c1R = ClampByte((-9 * r1[off + 2] + 111 * r2[off + 2] + 29 * r3[off + 2] - 3 * r4[off + 2] + 64) >> 7);
+
+                        dRow1[off] = c1B;
+                        dRow1[off + 1] = c1G;
+                        dRow1[off + 2] = c1R;
+                        dRow1[off + 3] = 255;
+                    }
+                }
+            }
+
+            return dst;
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(horiz);
+        }
+
+        static void InterpolateHorizPair(byte* sRow, byte* hRow, int k, int w)
+        {
+            byte* p0 = sRow + (Math.Clamp(k - 2, 0, w - 1) * 4);
+            byte* p1 = sRow + (Math.Clamp(k - 1, 0, w - 1) * 4);
+            byte* p2 = sRow + (k * 4);
+            byte* p3 = sRow + (Math.Clamp(k + 1, 0, w - 1) * 4);
+            byte* p4 = sRow + (Math.Clamp(k + 2, 0, w - 1) * 4);
+            byte* d0 = hRow + (k * 8);
+            byte* d1 = d0 + 4;
+
+            d0[0] = ClampByte((-3 * p0[0] + 29 * p1[0] + 111 * p2[0] - 9 * p3[0] + 64) >> 7);
+            d0[1] = ClampByte((-3 * p0[1] + 29 * p1[1] + 111 * p2[1] - 9 * p3[1] + 64) >> 7);
+            d0[2] = ClampByte((-3 * p0[2] + 29 * p1[2] + 111 * p2[2] - 9 * p3[2] + 64) >> 7);
+            d0[3] = 255;
+
+            d1[0] = ClampByte((-9 * p1[0] + 111 * p2[0] + 29 * p3[0] - 3 * p4[0] + 64) >> 7);
+            d1[1] = ClampByte((-9 * p1[1] + 111 * p2[1] + 29 * p3[1] - 3 * p4[1] + 64) >> 7);
+            d1[2] = ClampByte((-9 * p1[2] + 111 * p2[2] + 29 * p3[2] - 3 * p4[2] + 64) >> 7);
+            d1[3] = 255;
+        }
+
+        static byte ClampByte(int v) => v <= 0 ? (byte)0 : v >= 255 ? (byte)255 : (byte)v;
+    }
+
+    private static unsafe byte[] ComputeDownsampledWhiteness(byte[] src, int w, int h, int ds, int halfW, int halfH)
+    {
+        var result = new byte[halfW * halfH];
+        fixed (byte* pSrc = src)
+        fixed (byte* pRes = result)
+        {
+            for (int hy = 0; hy < halfH; hy++)
+            {
+                int y0 = hy * ds;
+                int y1 = Math.Min(h, y0 + ds);
+                for (int hx = 0; hx < halfW; hx++)
+                {
+                    int x0 = hx * ds;
+                    int x1 = Math.Min(w, x0 + ds);
+                    int sum = 0;
+                    int count = 0;
+                    for (int y = y0; y < y1; y++)
+                    {
+                        byte* row = pSrc + (y * w * 4);
+                        for (int x = x0; x < x1; x++)
+                        {
+                            byte* sp = row + (x * 4);
+                            byte b = sp[0];
+                            byte g = sp[1];
+                            byte r = sp[2];
+                            byte max = Math.Max(r, Math.Max(g, b));
+                            byte min = Math.Min(r, Math.Min(g, b));
+                            int wVal = min - (((max - min) * 3) >> 1);
+                            if (wVal > 0)
+                                sum += wVal;
+                            count++;
+                        }
+                    }
+                    pRes[(hy * halfW) + hx] = count > 0 ? (byte)(sum / count) : (byte)0;
+                }
+            }
+        }
+        return result;
+    }
+
+    private static unsafe byte[] ApplyMedian7x7(byte[] src, int w, int h)
+    {
+        var dst = new byte[w * h];
+        int* hist = stackalloc int[256];
+
+        fixed (byte* pSrc = src)
+        fixed (byte* pDst = dst)
+        {
+            for (int y = 0; y < h; y++)
+            {
+                for (int i = 0; i < 256; i++)
+                    hist[i] = 0;
+
+                for (int dy = -3; dy <= 3; dy++)
+                {
+                    int ny = Math.Clamp(y + dy, 0, h - 1);
+                    byte* row = pSrc + (ny * w);
+                    for (int dx = -3; dx <= 3; dx++)
+                    {
+                        int nx = Math.Clamp(dx, 0, w - 1);
+                        hist[row[nx]]++;
+                    }
+                }
+
+                int median = 0;
+                int lt = 0;
+                while (lt + hist[median] <= 24)
+                {
+                    lt += hist[median];
+                    median++;
+                }
+
+                int dstRow = y * w;
+                pDst[dstRow] = (byte)median;
+
+                for (int x = 1; x < w; x++)
+                {
+                    int remX = Math.Clamp(x - 4, 0, w - 1);
+                    int addX = Math.Clamp(x + 3, 0, w - 1);
+                    if (remX != addX)
+                    {
+                        for (int dy = -3; dy <= 3; dy++)
+                        {
+                            int ny = Math.Clamp(y + dy, 0, h - 1);
+                            byte* row = pSrc + (ny * w);
+
+                            byte rv = row[remX];
+                            hist[rv]--;
+                            if (rv < median)
+                                lt--;
+
+                            byte av = row[addX];
+                            hist[av]++;
+                            if (av < median)
+                                lt++;
+                        }
+
+                        while (lt > 24)
+                        {
+                            median--;
+                            lt -= hist[median];
+                        }
+                        while (lt + hist[median] <= 24)
+                        {
+                            lt += hist[median];
+                            median++;
+                        }
+                    }
+
+                    pDst[dstRow + x] = (byte)median;
                 }
             }
         }
 
         return dst;
+    }
+
+    private static unsafe void ComputeSeparableMin(byte[] src, byte[] dst, int w, int h, int radius)
+    {
+        var rowMin = System.Buffers.ArrayPool<byte>.Shared.Rent(w * h);
+        try
+        {
+            fixed (byte* pSrc = src)
+            fixed (byte* pRowMin = rowMin)
+            fixed (byte* pDst = dst)
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    int rowOff = y * w;
+                    byte* sRow = pSrc + rowOff;
+                    byte* mRow = pRowMin + rowOff;
+
+                    for (int x = 0; x < w; x++)
+                    {
+                        int x0 = x - radius;
+                        if (x0 < 0) x0 = 0;
+                        int x1 = x + radius;
+                        if (x1 >= w) x1 = w - 1;
+
+                        byte minVal = sRow[x0];
+                        for (int nx = x0 + 1; nx <= x1; nx++)
+                        {
+                            if (sRow[nx] < minVal)
+                                minVal = sRow[nx];
+                        }
+                        mRow[x] = minVal;
+                    }
+                }
+
+                for (int y = 0; y < h; y++)
+                {
+                    int y0 = y - radius;
+                    if (y0 < 0) y0 = 0;
+                    int y1 = y + radius;
+                    if (y1 >= h) y1 = h - 1;
+                    byte* dRow = pDst + (y * w);
+
+                    for (int x = 0; x < w; x++)
+                    {
+                        byte minVal = pRowMin[(y0 * w) + x];
+                        for (int ny = y0 + 1; ny <= y1; ny++)
+                        {
+                            byte v = pRowMin[(ny * w) + x];
+                            if (v < minVal)
+                                minVal = v;
+                        }
+                        dRow[x] = minVal;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(rowMin);
+        }
     }
 
     private static byte[] BuildGlyphGrid(byte[] cleaned, int w, int h)
@@ -656,141 +1274,6 @@ public sealed class WindowsOcrService : IDisposable
         }
 
         return grid;
-    }
-
-    private static bool[] MarkProtectedWhiteGlyphs(byte[] lum, byte[] sat, int w, int h)
-    {
-        var protectedGlyph = new bool[w * h];
-
-        for (int y = 0; y < h; y++)
-        {
-            int rowOffset = y * w;
-            int runStart = -1;
-
-            for (int x = 0; x <= w; x++)
-            {
-                bool isWhiteGlyphCandidate = x < w
-                    && lum[rowOffset + x] >= 170
-                    && sat[rowOffset + x] <= 46;
-
-                if (isWhiteGlyphCandidate && runStart < 0)
-                {
-                    runStart = x;
-                }
-                else if (!isWhiteGlyphCandidate && runStart >= 0)
-                {
-                    int runLen = x - runStart;
-                    if (runLen <= 44)
-                    {
-                        int yMin = Math.Max(0, y - 3);
-                        int yMax = Math.Min(h - 1, y + 3);
-
-                        for (int rx = runStart; rx < x; rx++)
-                        {
-                            int idx = rowOffset + rx;
-                            byte centerLum = lum[idx];
-                            int xMin = Math.Max(0, rx - 3);
-                            int xMax = Math.Min(w - 1, rx + 3);
-                            bool hasShadowOrEdge = false;
-
-                            for (int ny = yMin; ny <= yMax && !hasShadowOrEdge; ny++)
-                            {
-                                int nRow = ny * w;
-                                for (int nx = xMin; nx <= xMax; nx++)
-                                {
-                                    byte nLum = lum[nRow + nx];
-                                    if (nLum <= 118 || (centerLum - nLum) >= 55)
-                                    {
-                                        hasShadowOrEdge = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if (hasShadowOrEdge)
-                                protectedGlyph[idx] = true;
-                        }
-                    }
-
-                    runStart = -1;
-                }
-            }
-        }
-
-        // Anti-aliased gri harf kenarlarının flood-fill tarafından yenmesini önlemek için 1 piksellik genişletme (dilation)
-        var dilated = (bool[])protectedGlyph.Clone();
-        for (int y = 0; y < h; y++)
-        {
-            int rowOffset = y * w;
-            int yMin = Math.Max(0, y - 1);
-            int yMax = Math.Min(h - 1, y + 1);
-
-            for (int x = 0; x < w; x++)
-            {
-                if (!protectedGlyph[rowOffset + x])
-                    continue;
-
-                int xMin = Math.Max(0, x - 1);
-                int xMax = Math.Min(w - 1, x + 1);
-                for (int ny = yMin; ny <= yMax; ny++)
-                {
-                    int nRow = ny * w;
-                    for (int nx = xMin; nx <= xMax; nx++)
-                    {
-                        int nIdx = nRow + nx;
-                        if (!dilated[nIdx] && lum[nIdx] >= 115 && sat[nIdx] <= 60)
-                            dilated[nIdx] = true;
-                    }
-                }
-            }
-        }
-
-        return dilated;
-    }
-
-    private static void SeedHorizontalRuns(byte[] lum, int w, int y, int minRunLen, byte lumThreshold, Action<int> seed)
-    {
-        int rowOffset = y * w;
-        int runStart = -1;
-        for (int x = 0; x <= w; x++)
-        {
-            bool bright = x < w && lum[rowOffset + x] > lumThreshold;
-            if (bright && runStart < 0)
-            {
-                runStart = x;
-            }
-            else if (!bright && runStart >= 0)
-            {
-                if (x - runStart >= minRunLen)
-                {
-                    for (int rx = runStart; rx < x; rx++)
-                        seed(rowOffset + rx);
-                }
-                runStart = -1;
-            }
-        }
-    }
-
-    private static void SeedVerticalRuns(byte[] lum, int w, int h, int x, int minRunLen, byte lumThreshold, Action<int> seed)
-    {
-        int runStart = -1;
-        for (int y = 0; y <= h; y++)
-        {
-            bool bright = y < h && lum[(y * w) + x] > lumThreshold;
-            if (bright && runStart < 0)
-            {
-                runStart = y;
-            }
-            else if (!bright && runStart >= 0)
-            {
-                if (y - runStart >= minRunLen)
-                {
-                    for (int ry = runStart; ry < y; ry++)
-                        seed((ry * w) + x);
-                }
-                runStart = -1;
-            }
-        }
     }
 
     public void Dispose()

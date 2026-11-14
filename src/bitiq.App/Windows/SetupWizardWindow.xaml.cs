@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Bitiq.Core.Models;
 using Bitiq.Core.Ocr;
 using Bitiq.Core.Translation;
@@ -12,6 +13,8 @@ public partial class SetupWizardWindow : Window
     private readonly AppSettings _settings;
     private CancellationTokenSource? _downloadCts;
     private bool _isDownloading;
+
+    private bool IsEnglishUi => string.Equals(_settings.UiLanguage, "en", StringComparison.OrdinalIgnoreCase);
 
     public SetupWizardWindow(AppSettings settings, ModelDownloadService downloadService)
     {
@@ -30,31 +33,109 @@ public partial class SetupWizardWindow : Window
             QuantPanel.Visibility = Visibility.Collapsed;
         }
 
+        ApplyWizardLanguage();
+    }
+
+    private void WizardLangTrBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.UiLanguage = "tr";
+        ApplyWizardLanguage();
+    }
+
+    private void WizardLangEnBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.UiLanguage = "en";
+        ApplyWizardLanguage();
+    }
+
+    private void ApplyWizardLanguage()
+    {
+        bool en = IsEnglishUi;
+        var activeBg = new SolidColorBrush(Color.FromRgb(2, 132, 199));
+        var activeFg = Brushes.White;
+        var idleBg = Brushes.Transparent;
+        var idleFg = new SolidColorBrush(Color.FromRgb(148, 163, 184));
+
+        WizardLangTrBtn.Background = en ? idleBg : activeBg;
+        WizardLangTrBtn.Foreground = en ? idleFg : activeFg;
+        WizardLangEnBtn.Background = en ? activeBg : idleBg;
+        WizardLangEnBtn.Foreground = en ? activeFg : idleFg;
+
+        WelcomeHeaderText.Text = en ? "Welcome to bitiq" : "bitiq'e Hoş Geldiniz";
+        WelcomeDescText.Text = en
+            ? "Choose which translation engine to start with. You can switch anytime from the main window."
+            : "Başlamak için hangi çeviri motorunu kullanmak istediğinizi seçin. İstediğiniz zaman ana ekrandan değiştirebilirsiniz.";
+        SysCheckHeaderText.Text = en ? "System Readiness Check" : "Sistem Hazırlık Kontrolü";
+        QuantLabelText.Text = en ? "Local Model Quality:" : "Yerel Model Kalitesi:";
+        QuantQ8Item.Content = en
+            ? "Q8_0 (~3.85 GB — Highest Quality, Default)"
+            : "Q8_0 (~3.85 GB — En Yüksek Kalite, Varsayılan)";
+        QuantQ4Item.Content = en
+            ? "Q4_K_M (~2.32 GB — Faster & Lighter)"
+            : "Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)";
+        CancelBtn.Content = en ? "Cancel" : "İptal";
+
+        // ControlTemplate içindeki RadioButton çocuklarına ApplyTemplate sonrası eriş
+        LocalRadio.ApplyTemplate();
+        GoogleRadio.ApplyTemplate();
+
+        if (LocalRadio.Template.FindName("LocalCardTitleText", LocalRadio) is TextBlock lTitle)
+            lTitle.Text = en ? "Local (TranslateGemma)" : "Yerel (TranslateGemma)";
+        if (LocalRadio.Template.FindName("LocalCardSubtitleText", LocalRadio) is TextBlock lSub)
+            lSub.Text = en ? "Offline, more natural" : "İnternetsiz, daha doğal";
+        if (LocalRadio.Template.FindName("LocalCardDescText", LocalRadio) is TextBlock lDesc)
+            lDesc.Text = en
+                ? "• Ultra-low latency on RTX GPU\n• No internet required after setup\n• Downloads ~2.9–4.7 GB once (resumable)"
+                : "• RTX GPU ile ultra düşük gecikme\n• İnternet bağlantısı gerekmez\n• İlk seferde ~2.9–4.7 GB indirilir (kesilirse devam eder)";
+
+        if (GoogleRadio.Template.FindName("GoogleCardTitleText", GoogleRadio) is TextBlock gTitle)
+            gTitle.Text = "Google Translate";
+        if (GoogleRadio.Template.FindName("GoogleCardSubtitleText", GoogleRadio) is TextBlock gSub)
+            gSub.Text = en ? "Lightweight & fast" : "Hafif ve hızlı";
+        if (GoogleRadio.Template.FindName("GoogleCardDescText", GoogleRadio) is TextBlock gDesc)
+            gDesc.Text = en
+                ? "• Zero models or extra files downloaded\n• Zero GPU/VRAM usage\n• Ready immediately (requires internet)"
+                : "• Hiçbir model veya ek dosya indirilmez\n• GPU/VRAM tüketimi sıfırdır\n• Hemen kullanıma hazır (internet gerektirir)";
+
+        bool isLocal = LocalRadio.IsChecked == true;
+        StartBtn.Content = en
+            ? (isLocal ? "Download Local Model & Start" : "Continue Without Download (Google Translate)")
+            : (isLocal ? "Yerel Modeli İndir ve Başla" : "İndirmeden Devam Et (Google Translate)");
+
         RunSystemChecks();
     }
 
     private void RunSystemChecks()
     {
+        bool en = IsEnglishUi;
         var ocrStatus = WindowsOcrService.CheckEnglishOcrAvailability(out _);
         if (ocrStatus.IsAvailable)
         {
-            OcrStatusText.Text = $"✓ Windows OCR (İngilizce: {ocrStatus.LanguageTag}) yüklü ve hazır.";
+            OcrStatusText.Text = en
+                ? $"✓ Windows OCR (English: {ocrStatus.LanguageTag}) is installed and ready."
+                : $"✓ Windows OCR (İngilizce: {ocrStatus.LanguageTag}) yüklü ve hazır.";
+            OcrStatusText.Foreground = new SolidColorBrush(Color.FromRgb(226, 232, 240));
         }
         else
         {
-            OcrStatusText.Text = $"⚠ {ocrStatus.ErrorMessage} {ocrStatus.FixInstructions}";
-            OcrStatusText.Foreground = System.Windows.Media.Brushes.Orange;
+            OcrStatusText.Text = en
+                ? "⚠ Windows English (en-US) OCR pack is missing. Install via Settings or PowerShell: Add-WindowsCapability -Online -Name Language.OCR~~~en-US~0.0.1.0"
+                : $"⚠ {ocrStatus.ErrorMessage} {ocrStatus.FixInstructions}";
+            OcrStatusText.Foreground = Brushes.Orange;
         }
 
         var gpu = NvidiaDriverChecker.Check();
         if (gpu.WarningMessage is null)
         {
-            GpuStatusText.Text = $"✓ NVIDIA CUDA Sürücüsü hazır (CUDA {gpu.CudaVersionDisplay}).";
+            GpuStatusText.Text = en
+                ? $"✓ NVIDIA CUDA Driver ready (CUDA {gpu.CudaVersionDisplay})."
+                : $"✓ NVIDIA CUDA Sürücüsü hazır (CUDA {gpu.CudaVersionDisplay}).";
+            GpuStatusText.Foreground = new SolidColorBrush(Color.FromRgb(226, 232, 240));
         }
         else
         {
             GpuStatusText.Text = $"⚠ {gpu.WarningMessage} {gpu.UpdateInstructions}";
-            GpuStatusText.Foreground = System.Windows.Media.Brushes.Gold;
+            GpuStatusText.Foreground = Brushes.Gold;
         }
     }
 
@@ -63,11 +144,12 @@ public partial class SetupWizardWindow : Window
         if (!IsLoaded)
             return;
 
+        bool en = IsEnglishUi;
         bool isLocal = LocalRadio.IsChecked == true;
         QuantPanel.Visibility = isLocal ? Visibility.Visible : Visibility.Collapsed;
-        StartBtn.Content = isLocal
-            ? "Yerel Modeli İndir ve Başla"
-            : "İndirmeden Devam Et (Google Translate)";
+        StartBtn.Content = en
+            ? (isLocal ? "Download Local Model & Start" : "Continue Without Download (Google Translate)")
+            : (isLocal ? "Yerel Modeli İndir ve Başla" : "İndirmeden Devam Et (Google Translate)");
     }
 
     private async void Continue_Click(object sender, RoutedEventArgs e)
