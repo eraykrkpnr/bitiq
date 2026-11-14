@@ -1,113 +1,113 @@
 # bitiq
 
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20x64-0284C7?style=flat-square)](#sistem-gereksinimleri)
-[![Runtime](https://img.shields.io/badge/.NET-8.0%20Self--Contained-512BD4?style=flat-square)](#kaynak-koddan-derleme)
-[![Translation](https://img.shields.io/badge/%C3%87eviri-TranslateGemma%204B%20%7C%20Google-10B981?style=flat-square)](#%C3%B6zellikler)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11%20x64-0284C7?style=flat-square)](#system-requirements)
+[![Runtime](https://img.shields.io/badge/.NET-8.0%20Self--Contained-512BD4?style=flat-square)](#building-from-source)
+[![Translation](https://img.shields.io/badge/Translation-TranslateGemma%204B%20%7C%20Google-10B981?style=flat-square)](#features)
 [![Release](https://img.shields.io/github/v/release/eraykrkpnr/bitiq?style=flat-square&label=Release)](https://github.com/eraykrkpnr/bitiq/releases)
 
-**bitiq**, oyun içi sahneler, capture card önizleme pencereleri (PS5 / konsol vb.) veya videolar için geliştirilmiş, kurulum gerektirmeyen gerçek zamanlı **İngilizce → Türkçe** ekran altyazısı yakalama, OCR ve çeviri uygulamasıdır. Ekranın seçtiğiniz bölgesini veya kilitlediğiniz bir pencereyi izler, Türkçe çeviriyi düşük gecikmeyle hem ekranınızda hem de **OBS Studio** üzerinde canlı olarak gösterir.
+**bitiq** is a zero-install, real-time screen and window subtitle capture, OCR, and translation desktop app for Windows 10/11 (x64). Built for PC games, console capture card preview windows (PS5, etc.), and videos, it tracks your selected region or locked window and renders live translations with ultra-low latency both as a click-through desktop overlay and inside **OBS Studio**.
 
 ---
 
-## Özellikler
+## Features
 
-- **Pencereye Kilitli Yakalama & Ekran Bölgesi Seçimi**: Hedef pencereyi (oyun, tarayıcı, medya oynatıcı veya capture card önizleme penceresi) seçip içinden altyazı alanını işaretleyebilirsiniz. Yakalanan pencerenin üzerine başka bir pencere veya altyazı katmanı gelse bile bitiq yalnızca kilitli pencereyi yakalamaya devam eder.
-- **Çift Çeviri Motoru**:
-  - **Yerel Yapay Zeka (TranslateGemma 4B)**: İnternet gerektirmeden, doğrudan ekran kartınızda (`CUDA 13.5` / `CUDA 12.4`, yedek olarak `Vulkan` veya `CPU`) doğal ve bağlamsal çeviri yapar.
-  - **Google Translate**: Sıfır VRAM/RAM tüketimi ve sıfır disk alanı ile anında hafif çeviri sunar. Google moduna geçildiğinde `llama-server` bellekten (RAM + GPU VRAM) tamamen boşaltılır.
-- **Akıllı OCR & Altyazı Kararlılığı**: `Windows.Media.Ocr` motorunu akıllı arka plan temizleme, metin kararlılık filtresi, bitmemiş cümle birleştirme ve isteğe bağlı daktilo (typewriter) efekti ile birleştirir.
-- **Esnek Ekran Katmanı & OBS Desteği**:
-  - Tıklamaları arkadaki oyuna geçiren şeffaf ekran altyazı katmanı tek tıkla açılıp kapatılabilir (dilerseniz yalnızca OBS çıktısıyla kullanabilirsiniz).
-  - Yerleşik yerel `127.0.0.1` HTTP + SSE sunucusu ile yönetici izni gerektirmeden **OBS Tarayıcı Kaynağı (Browser Source)** ve yedek **Chroma Key** penceresi sunar.
-  - Yazı tipi, boyut, kenarlık, gölge, konum önayarları, taşma davranışı ve JSON stil profilleri desteklenir.
-- **Sıfır Yük Performans Monitörü**: **Performans** sekmesi üzerinden `bitiq` ve `llama-server` süreçlerinin CPU, RAM ile (`nvml.dll` üzerinden ek alt süreç başlatmadan) NVIDIA GPU ve VRAM kullanımlarını anlık izleyebilirsiniz.
-
----
-
-## İndirme ve Kurulum
-
-Uygulamayı çalıştırmak için .NET veya Python kurmanız gerekmez. Hazır tek dosya sürümünü **Releases** sekmesinden indirebilirsiniz:
-
-1. Sağdaki veya yukarıdaki **[Releases](https://github.com/eraykrkpnr/bitiq/releases)** sekmesine gidin ve en güncel sürümden **`bitiq-win-x64.zip`** dosyasını indirin.
-2. İndirdiğiniz ZIP arşivini bilgisayarınızda kalıcı bir klasöre çıkarın (ör. `C:\Program Files\bitiq` veya `D:\Apps\bitiq`).
-3. **`bitiq.exe`** dosyasına çift tıklayarak uygulamayı çalıştırın.
-   - **Windows SmartScreen Uyarısı**: Uygulama bireysel geliştirici imzası taşımadığı için Windows *"Windows bilgisayarınızı korudu"* uyarısı gösterebilir. **"Ek bilgi"** *(More info)* → **"Yine de çalıştır"** *(Run anyway)* adımlarını izleyerek başlatabilirsiniz.
-4. **İlk Kurulum Sihirbazı**:
-   - **Google Translate** seçerseniz ek dosya indirmeden hemen kullanıma başlarsınız.
-   - **Yerel (TranslateGemma 4B)** seçerseniz uygun `llama.cpp` (`b12378`) paketi ve seçtiğiniz GGUF modeli (`Q8_0` ~3.85 GB veya `Q4_K_M` ~2.32 GB), `%LOCALAPPDATA%\bitiq` klasörüne kaldığı yerden devam etme ve SHA-256 doğrulaması ile otomatik indirilir.
-5. **Kullanıma Başlayın**:
-   - **Genel** sekmesinde isterseniz **"Yakalama Kaynağı"** listesinden hedef pencereyi seçin (veya doğrudan ekran seçimi için tüm ekran modunda bırakın).
-   - **"🎯 Çevrilecek Alanı Seç"** düğmesiyle altyazıların çıktığı bölgeyi sürükleyip seçin.
-   - **"▶ Başlat"** düğmesine basın.
+- **Window-Locked Capture & Region Selection**: Pick any target window (game, browser, media player, or capture card preview window) and mark the subtitle area inside it. Even when other windows or the translated overlay appear on top, bitiq continues capturing only the locked target window.
+- **Dual Translation Engine**:
+  - **Local AI (TranslateGemma 4B)**: Runs offline directly on your GPU (`CUDA 13.5` / `CUDA 12.4`, with `Vulkan` and `CPU` fallbacks) for natural, context-aware translations.
+  - **Google Translate**: Lightweight, instant translation with zero GPU/VRAM usage and zero extra disk space. Switching to Google mode completely offloads `llama-server` from both RAM and GPU VRAM.
+- **Smart OCR & Subtitle Stabilization**: Combines in-process `Windows.Media.Ocr` with smart background removal for borderless or outlined subtitles, frame-change gating, stability filtering, incomplete-sentence merging, and optional typewriter streaming.
+- **Flexible Desktop Overlay & OBS Integration**:
+  - Click-through transparent desktop subtitle overlay that can be toggled on/off with one click (for OBS-only streaming setups).
+  - Built-in local `127.0.0.1` HTTP + SSE server requiring no administrator privileges for **OBS Browser Source**, plus a fallback **Chroma Key** window.
+  - Full styling controls (font family, size, outline, shadow, position presets, overflow modes, and JSON style profiles).
+- **Zero-Overhead Performance Monitor**: Inspect live CPU and RAM usage for both `bitiq` and `llama-server`, alongside in-process NVIDIA GPU and VRAM telemetry via `nvml.dll` without spawning external helper processes.
 
 ---
 
-## Sistem Gereksinimleri
+## Download & Installation
 
-| Bileşen | Minimum (Google Translate / CPU) | Önerilen (Yerel GPU — TranslateGemma 4B) |
+No .NET SDK or Python installation is required to run **bitiq**. Download the portable single-file build from the **Releases** tab:
+
+1. Open the **[Releases](https://github.com/eraykrkpnr/bitiq/releases)** page and download **`bitiq-win-x64.zip`** from the latest release.
+2. Extract the ZIP archive into a permanent folder (for example, `C:\Apps\bitiq` or `D:\Apps\bitiq`).
+3. Double-click **`bitiq.exe`** to launch the application.
+   - **Windows SmartScreen Notice**: Because the binary is not code-signed with a commercial certificate, Windows may display *"Windows protected your PC"*. Click **"More info"** → **"Run anyway"** to start the app.
+4. **First-Run Setup Wizard**:
+   - Choose **Google Translate** to start immediately without downloading extra files.
+   - Choose **Local (TranslateGemma 4B)** to automatically download the matching `llama.cpp` (`b12378`) runtime and your chosen GGUF quantization (`Q8_0` ~3.85 GB or `Q4_K_M` ~2.32 GB) into `%LOCALAPPDATA%\bitiq` with HTTP resume support and SHA-256 verification.
+5. **Start Translating**:
+   - In the main screen, optionally choose a target window from the **Capture Source** selector (or leave full-screen mode selected).
+   - Click **"Çevrilecek Alanı Seç"** (*Select Capture Region*) and drag over the subtitle area.
+   - Click **"Başlat"** (*Start*).
+
+---
+
+## System Requirements
+
+| Component | Minimum (Google Translate / CPU) | Recommended (Local GPU — TranslateGemma 4B) |
 |---|---|---|
-| **İşletim Sistemi** | Windows 10 (19041+) veya Windows 11 **(64-bit / x64)** | Windows 11 **(64-bit / x64)** |
-| **İngilizce OCR Paketi** | Windows `en-US` OCR bileşeni *(Zorunlu)* | Windows `en-US` OCR bileşeni *(Zorunlu)* |
-| **İşlemci (CPU)** | 4 çekirdekli modern x64 işlemci | 6+ çekirdekli modern x64 işlemci |
-| **Bellek (RAM)** | 4 GB RAM *(Google modu için < 200 MB kullanım)* | 16 GB RAM |
-| **Ekran Kartı (GPU)** | Gerekmez *(Google modu)* / Vulkan destekli GPU | **NVIDIA RTX GPU** (Q4_K_M için **4+ GB VRAM**, Q8_0 için **6+ GB VRAM**) |
-| **NVIDIA Sürücüsü** | — | CUDA 12.4 için **551.61+**, CUDA 13.5 için güncel **CUDA 13.5+** sürücüsü |
-| **Depolama** | ~200 MB boş alan | **5 – 7 GB** boş SSD alanı *(model ve llama.cpp dosyaları için)* |
-| **İnternet Bağlantısı** | Google Translate modu için gerekli | Yalnızca ilk model indirmede gerekli (sonrasında tamamen çevrimdışı) |
+| **Operating System** | Windows 10 (build 19041+) or Windows 11 **(64-bit / x64)** | Windows 11 **(64-bit / x64)** |
+| **Windows OCR Pack** | Windows `en-US` OCR capability *(Required)* | Windows `en-US` OCR capability *(Required)* |
+| **Processor (CPU)** | 4-core modern x64 CPU | 6+ core modern x64 CPU |
+| **Memory (RAM)** | 4 GB RAM *(Google mode uses < 200 MB)* | 16 GB RAM |
+| **Graphics (GPU)** | None required *(Google mode)* / Vulkan-capable GPU | **NVIDIA RTX GPU** (**4+ GB VRAM** for `Q4_K_M`, **6+ GB VRAM** for `Q8_0`) |
+| **NVIDIA Driver** | — | **551.61+** for CUDA 12.4, or **CUDA 13.5+** compatible driver |
+| **Storage** | ~200 MB free space | **5 – 7 GB** free SSD space *(for GGUF model & `llama.cpp` binaries)* |
+| **Internet Access** | Required for Google Translate mode | Required only for the initial model download (offline afterward) |
 
-### Windows İngilizce (`en-US`) OCR Bileşeni Kurulumu
+### Installing the Windows English (`en-US`) OCR Language Pack
 
-`bitiq`, yerleşik `Windows.Media.Ocr` API'sini kullanır. Sisteminizde İngilizce OCR paketi yüklü değilse uygulama açılışta uyarı gösterir. Yüklemek için:
+`bitiq` uses the built-in `Windows.Media.Ocr` API. If the English OCR capability is missing on your system, the app will display a warning on startup with setup instructions:
 
-- **Ayarlar Yolu**: *Ayarlar → Zaman ve Dil → Dil ve Bölge → Dil ekle → English (United States)* → **"Temel yazma"** ve **"Optik karakter tanıma (OCR)"** bileşenlerinin yüklü olduğundan emin olun.
-- **PowerShell Yolu (Yönetici olarak)**:
+- **Windows Settings**: *Settings → Time & language → Language & region → Add a language → English (United States)* and verify **Basic typing** / **Optical character recognition (OCR)** is installed.
+- **PowerShell (Run as Administrator)**:
   ```powershell
   Add-WindowsCapability -Online -Name Language.OCR~~~en-US~0.0.1.0
   ```
 
 ---
 
-## OBS Studio Entegrasyonu
+## OBS Studio Integration
 
-### Yöntem 1: OBS Tarayıcı Kaynağı (Önerilen — Şeffaf Arka Plan)
+### Method 1: OBS Browser Source (Recommended — Transparent Background)
 
-`bitiq`, yalnızca yerel makinede (`http://127.0.0.1:19555/`, port doluysa otomatik boş port) yönetici izni gerektirmeyen hafif bir HTTP + SSE sunucusu çalıştırır.
+`bitiq` hosts a lightweight local loopback HTTP + SSE server (`http://127.0.0.1:19555/`, automatically falling back to an available port if needed) without requiring admin privileges.
 
-1. OBS Studio'da **Kaynaklar (Sources)** altından **`+`** → **Tarayıcı (Browser)** ekleyin.
-2. `bitiq` içindeki **OBS** sekmesindeki URL adresini yapıştırın.
-3. **Genişlik** ve **Yükseklik** değerlerini OBS tuval çözünürlüğünüzle eşitleyin (ör. `1920 × 1080`).
-4. Ekranda çift altyazı görmek istemiyorsanız ana ekrandaki **"👁 Ekran Altyazısı: Açık"** düğmesine tıklayarak yalnızca OBS çıktısını aktif bırakabilirsiniz.
+1. In OBS Studio, go to **Sources** → **`+`** → **Browser**.
+2. Paste the URL displayed in the **OBS** tab of `bitiq`.
+3. Set **Width** and **Height** to match your OBS canvas resolution (e.g. `1920 × 1080`). Layout and font sizes scale responsively (`vh`/`vw`) and reconnect automatically if interrupted.
+4. If you only want subtitles visible on your stream without appearing on your gaming monitor, toggle off the desktop overlay button in the main window.
 
-### Yöntem 2: Chroma Key Penceresi (Yedek)
+### Method 2: Chroma Key Window (Fallback)
 
-1. **OBS** sekmesinden **"Düz renkli OBS Chroma Key penceresini aç"** seçeneğini işaretleyin (varsayılan arka plan `#00FF00`).
-2. OBS'te **Pencere Yakalama (Window Capture)** ekleyin ve **Filtreler → Renk Anahtarı (Chroma Key)** uygulayın.
+1. In the **OBS** tab, enable the solid-color **Chroma Key** window (default `#00FF00`).
+2. Add a **Window Capture** source in OBS and apply **Filters → Chroma Key**.
 
-> **Capture Card Gecikmesi İpucu:** Capture card önizleme pencerenizdeki donanım gecikmesiyle altyazı senkronu farklılaşırsa OBS'te video kaynağınıza sağ tıklayıp **Filtreler → Render Delay** ile milisaniye bazında eşitleme yapabilirsiniz.
+> **Capture Card Latency Tip:** If your capture card preview window has hardware delay compared to live OCR subtitles, right-click your video source in OBS → **Filters → Render Delay** to align them in milliseconds.
 
 ---
 
-## Kaynak Koddan Derleme
+## Building from Source
 
-Geliştirme veya kendi makinenizde derleme için **.NET 8 SDK** gereklidir:
+Requires the **.NET 8 SDK** on Windows (x64):
 
 ```powershell
 git clone https://github.com/eraykrkpnr/bitiq.git
 cd bitiq
 
-# Release derleme
+# Build in Release configuration
 dotnet build bitiq.slnx -c Release
 
-# Birim testleri
+# Run unit tests
 dotnet test bitiq.slnx -c Release
 
-# Tek dosya (self-contained) win-x64 çıktı alma
+# Publish a self-contained single-file win-x64 executable
 dotnet publish src/bitiq.App/bitiq.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/bitiq
 ```
 
 ---
 
-## Kullanılan Açık Modeller ve Araçlar
+## Open Models & Third-Party Tools
 
-- **Çıkarım Motoru**: [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) (`b12378` — CUDA 13.5, CUDA 12.4, Vulkan, CPU)
-- **Yerel Çeviri Modeli**: [`mradermacher/translategemma-4b-it-GGUF`](https://huggingface.co/mradermacher/translategemma-4b-it-GGUF) (`Q8_0` / `Q4_K_M`, Google Gemma Kullanım Şartları kapsamındadır; yalnızca Yerel mod seçildiğinde indirilir)
+- **Inference Engine**: [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) (`b12378` — CUDA 13.5, CUDA 12.4, Vulkan, CPU)
+- **Local Translation Model**: [`mradermacher/translategemma-4b-it-GGUF`](https://huggingface.co/mradermacher/translategemma-4b-it-GGUF) (`Q8_0` / `Q4_K_M`, subject to Google Gemma Terms of Use; downloaded at runtime only when Local mode is selected)
