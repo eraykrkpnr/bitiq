@@ -21,6 +21,8 @@ public sealed partial class SubtitleStabilizer
 {
     public static volatile bool IsEnglishSourceMode = true;
 
+    private const int AutoTypewriterHoldMs = 180;
+
     private readonly double _similarityThreshold;
     private int _requiredFrames;
     private int _debounceMs;
@@ -31,6 +33,7 @@ public sealed partial class SubtitleStabilizer
     private string _candidateNormalized = string.Empty;
     private int _candidateCount;
     private long _candidateLastChangedMs;
+    private bool _candidateIsGrowing;
 
     private string _lastCommittedText = string.Empty;
     private string _lastCommittedNormalized = string.Empty;
@@ -74,6 +77,7 @@ public sealed partial class SubtitleStabilizer
         _candidateNormalized = string.Empty;
         _candidateCount = 0;
         _candidateLastChangedMs = 0;
+        _candidateIsGrowing = false;
         _lastCommittedText = string.Empty;
         _lastCommittedNormalized = string.Empty;
         _lastCommittedLinesNormalized = [];
@@ -95,6 +99,11 @@ public sealed partial class SubtitleStabilizer
 
         if (string.IsNullOrEmpty(normalized))
         {
+            _candidateText = string.Empty;
+            _candidateNormalized = string.Empty;
+            _candidateCount = 0;
+            _candidateIsGrowing = false;
+
             if (_hasActiveSubtitle)
             {
                 if (_emptyFrameCount == 0)
@@ -107,38 +116,28 @@ public sealed partial class SubtitleStabilizer
                     return new StabilizerDecision(StabilizerAction.None, string.Empty, string.Empty);
                 }
 
-                _lastDisplayedText = _lastCommittedText;
-                _lastDisplayedNormalized = _lastCommittedNormalized;
-                _lastDisplayedLinesNormalized = _lastCommittedLinesNormalized;
-                _lastClearedMs = nowMs;
-                _hasActiveSubtitle = false;
-                _lastCommittedText = string.Empty;
-                _lastCommittedNormalized = string.Empty;
-                _lastCommittedLinesNormalized = [];
-                _upgradeCandidateText = string.Empty;
-                _upgradeCandidateCount = 0;
-                _emptyFrameCount = 0;
-                _emptySinceMs = 0;
-                _candidateText = string.Empty;
-                _candidateNormalized = string.Empty;
-                _candidateCount = 0;
-                _candidateLastChangedMs = nowMs;
-
-                return new StabilizerDecision(StabilizerAction.Clear, string.Empty, string.Empty);
+                return EmitClearDecision(nowMs);
             }
 
             _candidateText = string.Empty;
             _candidateNormalized = string.Empty;
             _candidateCount = 0;
             _candidateLastChangedMs = nowMs;
+            _candidateIsGrowing = false;
             return new StabilizerDecision(StabilizerAction.None, string.Empty, string.Empty);
         }
 
         _emptyFrameCount = 0;
         _emptySinceMs = 0;
 
+        bool grewFromActive = _hasActiveSubtitle
+            && TextGrowthDetector.IsGrowth(_lastCommittedNormalized, normalized);
+
         // Aktif çok/tek satırlı altyazı ile aynıysa veya onun bir alt-satırıysa OCR gürültüsü nedeniyle yeniden çevirme
-        if (_hasActiveSubtitle && IsCoveredByActiveSubtitle(_lastCommittedNormalized, _lastCommittedLinesNormalized, normalized))
+        // Ancak metin daktilo şeklinde büyüyorsa (IsGrowth) bastırma.
+        if (_hasActiveSubtitle
+            && !grewFromActive
+            && IsCoveredByActiveSubtitle(_lastCommittedNormalized, _lastCommittedLinesNormalized, normalized))
         {
             // Eğer aktif altyazının belirgin şekilde daha temiz (daha az OCR bozulmalı) bir okuması geldiyse yükselt
             if (!string.Equals(normalized, _lastCommittedNormalized, StringComparison.Ordinal)
@@ -167,6 +166,7 @@ public sealed partial class SubtitleStabilizer
                     _candidateText = string.Empty;
                     _candidateNormalized = string.Empty;
                     _candidateCount = 0;
+                    _candidateIsGrowing = false;
                     return new StabilizerDecision(StabilizerAction.Translate, normalized, cleaned);
                 }
 
@@ -178,6 +178,7 @@ public sealed partial class SubtitleStabilizer
             _candidateText = string.Empty;
             _candidateNormalized = string.Empty;
             _candidateCount = 0;
+            _candidateIsGrowing = false;
             return new StabilizerDecision(StabilizerAction.None, normalized, cleaned);
         }
 
@@ -187,6 +188,7 @@ public sealed partial class SubtitleStabilizer
         if (!_hasActiveSubtitle
             && !string.IsNullOrEmpty(_lastDisplayedNormalized)
             && (nowMs - _lastClearedMs) <= reuseWindowMs
+            && !TextGrowthDetector.IsGrowth(_lastDisplayedNormalized, normalized)
             && IsCoveredByActiveSubtitle(_lastDisplayedNormalized, _lastDisplayedLinesNormalized, normalized))
         {
             _hasActiveSubtitle = true;
@@ -198,11 +200,21 @@ public sealed partial class SubtitleStabilizer
             _candidateText = string.Empty;
             _candidateNormalized = string.Empty;
             _candidateCount = 0;
+            _candidateIsGrowing = false;
             return new StabilizerDecision(StabilizerAction.None, normalized, cleaned);
         }
 
-        // Aday metin ile aynı mı?
-        if (_candidateCount > 0 && IsSameSubtitle(_candidateNormalized, normalized))
+        // Aday metin daktilo şeklinde büyüyorsa zamanlayıcıyı sıfırla; aynı metinse sayacı artır
+        bool grewFromCandidate = _candidateCount > 0 && TextGrowthDetector.IsGrowth(_candidateNormalized, normalized);
+        if (grewFromCandidate)
+        {
+            _candidateCount++;
+            _candidateText = cleaned;
+            _candidateNormalized = normalized;
+            _candidateLastChangedMs = nowMs;
+            _candidateIsGrowing = true;
+        }
+        else if (_candidateCount > 0 && IsSameSubtitle(_candidateNormalized, normalized))
         {
             _candidateCount++;
             // Daha uzun / daha eksiksiz satırı tercih et
@@ -218,23 +230,66 @@ public sealed partial class SubtitleStabilizer
             _candidateNormalized = normalized;
             _candidateCount = 1;
             _candidateLastChangedMs = nowMs;
+            _candidateIsGrowing = grewFromActive;
         }
 
         return TryCommit(nowMs);
     }
 
     /// <summary>
-    /// Daktilo debounce süresi dolduysa zamanlayıcı tick'inde bekleyen adayı onaylar.
+    /// Daktilo debounce süresi dolduysa veya sakin/durağan sahnede yeterli süre yeni değişim
+    /// gelmeden bekleyen aday / boş ekran doğrulandıysa zamanlayıcı tick'inde onaylar.
     /// </summary>
     public StabilizerDecision PollDebounce(long nowMs)
     {
+        if (_hasActiveSubtitle
+            && _emptyFrameCount > 0
+            && string.IsNullOrEmpty(_candidateNormalized)
+            && (nowMs - _emptySinceMs) >= Math.Max(_minEmptyDurationMs, 220))
+        {
+            return EmitClearDecision(nowMs);
+        }
+
         if (string.IsNullOrEmpty(_candidateNormalized))
             return new StabilizerDecision(StabilizerAction.None, string.Empty, string.Empty);
 
-        if (_hasActiveSubtitle && IsCoveredByActiveSubtitle(_lastCommittedNormalized, _lastCommittedLinesNormalized, _candidateNormalized))
+        if (_hasActiveSubtitle
+            && !TextGrowthDetector.IsGrowth(_lastCommittedNormalized, _candidateNormalized)
+            && IsCoveredByActiveSubtitle(_lastCommittedNormalized, _lastCommittedLinesNormalized, _candidateNormalized))
             return new StabilizerDecision(StabilizerAction.None, string.Empty, string.Empty);
 
+        // Durağan film/oyun sahnelerinde piksel değişmediği için yeni kare akışı durduğunda
+        // aday belirli süre boyunca değişmeden ekranda kaldıysa kararlılık şartını sağlamış say.
+        if (_requiredFrames > 1 && _candidateCount > 0 && _candidateCount < _requiredFrames)
+        {
+            int quietConfirmMs = Math.Max(_debounceMs, _requiredFrames == 2 ? 220 : 350);
+            if ((nowMs - _candidateLastChangedMs) >= quietConfirmMs)
+                _candidateCount = _requiredFrames;
+        }
+
         return TryCommit(nowMs);
+    }
+
+    private StabilizerDecision EmitClearDecision(long nowMs)
+    {
+        _lastDisplayedText = _lastCommittedText;
+        _lastDisplayedNormalized = _lastCommittedNormalized;
+        _lastDisplayedLinesNormalized = _lastCommittedLinesNormalized;
+        _lastClearedMs = nowMs;
+        _hasActiveSubtitle = false;
+        _lastCommittedText = string.Empty;
+        _lastCommittedNormalized = string.Empty;
+        _lastCommittedLinesNormalized = [];
+        _upgradeCandidateText = string.Empty;
+        _upgradeCandidateCount = 0;
+        _emptyFrameCount = 0;
+        _emptySinceMs = 0;
+        _candidateText = string.Empty;
+        _candidateNormalized = string.Empty;
+        _candidateCount = 0;
+        _candidateLastChangedMs = nowMs;
+        _candidateIsGrowing = false;
+        return new StabilizerDecision(StabilizerAction.Clear, string.Empty, string.Empty);
     }
 
     private StabilizerDecision TryCommit(long nowMs)
@@ -259,20 +314,31 @@ public sealed partial class SubtitleStabilizer
         if (_candidateCount < effectiveRequired)
             return new StabilizerDecision(StabilizerAction.None, string.Empty, string.Empty);
 
-        if (_debounceMs > 0 && (nowMs - _candidateLastChangedMs) < _debounceMs)
+        // Büyümekte olan daktilo metni henüz cümle sonuna ulaşmadıysa bekleme süresini koru
+        // (debounce=0 ise AutoTypewriterHoldMs uygula); cümle sonu noktalama geldiğinde gecikmesiz onayla.
+        int effectiveDebounceMs = _candidateIsGrowing
+            ? (hasTerminalPunctuation ? 0 : (_debounceMs > 0 ? _debounceMs : AutoTypewriterHoldMs))
+            : _debounceMs;
+
+        if (effectiveDebounceMs > 0 && (nowMs - _candidateLastChangedMs) < effectiveDebounceMs)
             return new StabilizerDecision(StabilizerAction.None, string.Empty, string.Empty);
 
-        _lastCommittedText = _candidateText;
-        _lastCommittedNormalized = _candidateNormalized;
-        _lastDisplayedText = _candidateText;
-        _lastDisplayedNormalized = _candidateNormalized;
-        _lastCommittedLinesNormalized = ExtractNormalizedLines(_candidateText);
+        string committedNorm = _candidateNormalized;
+        string committedRaw = _candidateText;
+        _lastCommittedText = committedRaw;
+        _lastCommittedNormalized = committedNorm;
+        _lastDisplayedText = committedRaw;
+        _lastDisplayedNormalized = committedNorm;
+        _lastCommittedLinesNormalized = ExtractNormalizedLines(committedRaw);
         _lastDisplayedLinesNormalized = _lastCommittedLinesNormalized;
         _upgradeCandidateText = string.Empty;
         _upgradeCandidateCount = 0;
         _hasActiveSubtitle = true;
+        _candidateText = string.Empty;
+        _candidateNormalized = string.Empty;
         _candidateCount = 0;
-        return new StabilizerDecision(StabilizerAction.Translate, _candidateNormalized, _candidateText);
+        _candidateIsGrowing = false;
+        return new StabilizerDecision(StabilizerAction.Translate, committedNorm, committedRaw);
     }
 
     private bool IsCoveredByActiveSubtitle(string activeNormalized, string[] activeLinesNormalized, string candidateNormalized)
@@ -318,13 +384,7 @@ public sealed partial class SubtitleStabilizer
     }
 
     private static bool EndsWithSentencePunctuation(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        string trimmed = text.TrimEnd(' ', '\t', '"', '\'', '\u2019', '\u201D', ')');
-        return trimmed.Length > 0 && trimmed[^1] is '.' or '!' or '?' or '\u2026';
-    }
+        => TextGrowthDetector.EndsSentence(text);
 
     private static string[] ExtractNormalizedLines(string text)
     {

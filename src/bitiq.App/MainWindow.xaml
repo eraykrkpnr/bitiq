@@ -197,7 +197,7 @@
                                          VerticalContentAlignment="Stretch">
                                 <RadioButton.Template>
                                     <ControlTemplate TargetType="RadioButton">
-                                        <Border x:Name="Card" Background="#1E293B" BorderBrush="#334155" BorderThickness="2" CornerRadius="10" Padding="16" Cursor="Hand">
+                                        <Border x:Name="Card" Background="#1E293B" BorderBrush="#334155" BorderThickness="2" CornerRadius="10" Padding="14" Cursor="Hand">
                                             <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
                                         </Border>
                                         <ControlTemplate.Triggers>
@@ -209,9 +209,9 @@
                                     </ControlTemplate>
                                 </RadioButton.Template>
                                 <StackPanel>
-                                    <TextBlock x:Name="EngineLocalTitleText" Text="Yerel (TranslateGemma): internetsiz, daha doğal" FontSize="15" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="EngineLocalTitleText" Text="Yerel (TranslateGemma): internetsiz, daha doğal" FontSize="14.5" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
                                     <TextBlock x:Name="EngineLocalDescText" Text="RTX GPU üzerinde çalışır. İlk seferde llama.cpp ve TranslateGemma 4B indirilir."
-                                               Foreground="#94A3B8" FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                               Foreground="#94A3B8" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0" />
                                 </StackPanel>
                             </RadioButton>
 
@@ -223,7 +223,7 @@
                                          VerticalContentAlignment="Stretch">
                                 <RadioButton.Template>
                                     <ControlTemplate TargetType="RadioButton">
-                                        <Border x:Name="Card" Background="#1E293B" BorderBrush="#334155" BorderThickness="2" CornerRadius="10" Padding="16" Cursor="Hand">
+                                        <Border x:Name="Card" Background="#1E293B" BorderBrush="#334155" BorderThickness="2" CornerRadius="10" Padding="14" Cursor="Hand">
                                             <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
                                         </Border>
                                         <ControlTemplate.Triggers>
@@ -235,9 +235,9 @@
                                     </ControlTemplate>
                                 </RadioButton.Template>
                                 <StackPanel>
-                                    <TextBlock x:Name="EngineGoogleTitleText" Text="Google Translate: hafif ve hızlı" FontSize="15" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="EngineGoogleTitleText" Text="Google Translate: hafif ve hızlı" FontSize="14.5" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
                                     <TextBlock x:Name="EngineGoogleDescText" Text="Ekran kartı ve bellek kullanmaz. Seçildiğinde yerel model VRAM/RAM'den tamamen boşaltılır."
-                                               Foreground="#94A3B8" FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                               Foreground="#94A3B8" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0" />
                                 </StackPanel>
                             </RadioButton>
                         </Grid>
@@ -824,6 +824,13 @@
                                             <ComboBoxItem Content="3 Kare (En Kararlı)" Tag="3" />
                                         </ComboBox>
                                     </StackPanel>
+                                    <StackPanel Width="235" Margin="0,0,16,10">
+                                        <TextBlock x:Name="AdvOcrEngineLabelText" Text="OCR Motoru" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <ComboBox x:Name="OcrEngineCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
+                                            <ComboBoxItem Content="Windows OCR (Yerleşik)" Tag="WindowsOcr" />
+                                            <ComboBoxItem Content="OneOCR (Win11 Akıllı ONNX • Çoklu Dil)" Tag="OneOcr" />
+                                        </ComboBox>
+                                    </StackPanel>
                                     <StackPanel Width="160" Margin="0,0,16,10">
                                         <TextBlock x:Name="AdvThreadsLabelText" Text="CPU Thread Sayısı" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
                                         <ComboBox x:Name="ThreadsCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
@@ -838,6 +845,10 @@
                                     <StackPanel Width="260" Margin="0,0,18,8">
                                         <TextBlock x:Name="DebounceLabel" Text="Daktilo Beklemesi (N ms değişmeyince çevir): 0 ms" FontSize="12" Foreground="#94A3B8" />
                                         <Slider x:Name="DebounceSlider" Minimum="0" Maximum="800" TickFrequency="50" IsSnapToTickEnabled="True" ValueChanged="AdvancedSlider_Changed" />
+                                    </StackPanel>
+                                    <StackPanel x:Name="OcrConfidencePanel" Width="260" Margin="0,0,18,8">
+                                        <TextBlock x:Name="OcrConfidenceLabel" Text="OneOCR Güven Eşiği (Gürültü Filtresi): %45" FontSize="12" Foreground="#94A3B8" />
+                                        <Slider x:Name="OcrConfidenceSlider" Minimum="0" Maximum="90" TickFrequency="5" IsSnapToTickEnabled="True" ValueChanged="AdvancedSlider_Changed" />
                                     </StackPanel>
                                     <CheckBox x:Name="StreamingCheck" Content="Daktilo (typewriter) efektiyle akışlı göster" VerticalAlignment="Center" Margin="0,4,18,4" Checked="StreamingCheck_Changed" Unchecked="StreamingCheck_Changed" />
                                     <CheckBox x:Name="PreprocessCheck" Content="Akıllı Arka Plan Temizleme (Arka plansız altyazılar için önerilen)" VerticalAlignment="Center" Margin="0,4,18,4" Checked="AdvancedCheck_Changed" Unchecked="AdvancedCheck_Changed" />

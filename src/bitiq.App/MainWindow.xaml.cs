@@ -72,7 +72,11 @@ public partial class MainWindow : Window
         _settings = _settingsService.Load();
         InitializeComponent();
 
-        _ocrService = new WindowsOcrService(_settings.OcrPreprocessEnabled, _settings.SourceLanguage);
+        _ocrService = new WindowsOcrService(
+            _settings.OcrPreprocessEnabled,
+            _settings.SourceLanguage,
+            _settings.OcrEngine,
+            _settings.OcrMinConfidence);
         _downloadService = new ModelDownloadService(_settingsService);
         _llamaManager = new LlamaServerManager(_downloadService);
         _googleTranslator = new GoogleGtxTranslator(_translationCache);
@@ -98,9 +102,7 @@ public partial class MainWindow : Window
     }
 
     private ITranslator GetActiveTranslator() =>
-        _settings.TranslationEngine == TranslationEngineKind.Local
-            ? _llamaTranslator
-            : _googleTranslator;
+        _settings.TranslationEngine == TranslationEngineKind.Local ? _llamaTranslator : _googleTranslator;
 
     private void WireEvents()
     {
@@ -311,9 +313,12 @@ public partial class MainWindow : Window
             SelectComboTag(QuantSelectionCombo, _settings.LocalModelQuantization.ToString());
             SelectComboTag(BackendCombo, _settings.LocalBackend.ToString());
             SelectComboTag(StabilityFramesCombo, _settings.StabilityFrames.ToString());
+            SelectComboTag(OcrEngineCombo, _settings.OcrEngine.ToString());
             SelectComboTag(ThreadsCombo, _settings.LlamaThreads.ToString());
             DebounceSlider.Value = _settings.TypewriterDebounceMs;
+            OcrConfidenceSlider.Value = Math.Clamp(Math.Round(_settings.OcrMinConfidence * 100.0), 0, 90);
             UpdateDebounceLabel();
+            UpdateOcrConfidenceUi();
             StreamingCheck.IsChecked = _settings.StreamingEnabled;
             StreamingMainCheck.IsChecked = _settings.StreamingEnabled;
             PreprocessCheck.IsChecked = _settings.OcrPreprocessEnabled;
@@ -517,6 +522,17 @@ public partial class MainWindow : Window
         DebounceLabel.Text = IsEnglishUi
             ? $"Typewriter Debounce (wait N ms): {_settings.TypewriterDebounceMs} ms"
             : $"Daktilo Beklemesi (N ms değişmeyince çevir): {_settings.TypewriterDebounceMs} ms";
+    }
+
+    private void UpdateOcrConfidenceUi()
+    {
+        int pct = (int)Math.Clamp(Math.Round(_settings.OcrMinConfidence * 100.0), 0, 90);
+        OcrConfidenceLabel.Text = IsEnglishUi
+            ? $"OneOCR Confidence Threshold (Noise Filter): {pct}%"
+            : $"OneOCR Güven Eşiği (Gürültü Filtresi): %{pct}";
+        OcrConfidencePanel.Visibility = _settings.OcrEngine == OcrEngineKind.OneOcr
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private void BroadcastStyleLive()
@@ -1217,16 +1233,29 @@ public partial class MainWindow : Window
         if (IsUiSuppressed)
             return;
 
+        var previousOcrEngine = _settings.OcrEngine;
+
         if (Enum.TryParse<ModelQuantization>(GetComboTag(QuantSelectionCombo), out var q))
             _settings.LocalModelQuantization = q;
         if (Enum.TryParse<LocalBackendKind>(GetComboTag(BackendCombo), out var b))
             _settings.LocalBackend = b;
         if (int.TryParse(GetComboTag(StabilityFramesCombo), out int sf))
             _settings.StabilityFrames = sf;
+        if (Enum.TryParse<OcrEngineKind>(GetComboTag(OcrEngineCombo), out var ocrEngine))
+            _settings.OcrEngine = ocrEngine;
         if (int.TryParse(GetComboTag(ThreadsCombo), out int th))
             _settings.LlamaThreads = th;
 
         _settingsService.Save(_settings);
+
+        if (_settings.OcrEngine != previousOcrEngine)
+        {
+            _ocrService.ConfigureEngine(_settings.OcrEngine, _settings.OcrMinConfidence, _settings.SourceLanguage);
+            UpdateOcrConfidenceUi();
+            RefreshLanguageCombos();
+            CheckEnvironmentWarnings();
+        }
+
         _pipeline.ApplyLiveSettings(_settings);
     }
 
@@ -1236,7 +1265,9 @@ public partial class MainWindow : Window
             return;
 
         _settings.TypewriterDebounceMs = (int)DebounceSlider.Value;
+        _settings.OcrMinConfidence = Math.Clamp(OcrConfidenceSlider.Value / 100.0, 0.0, 0.90);
         UpdateDebounceLabel();
+        UpdateOcrConfidenceUi();
         _settingsService.Save(_settings);
         _pipeline.ApplyLiveSettings(_settings);
     }
@@ -1498,7 +1529,8 @@ public partial class MainWindow : Window
         UnloadLlamaBtn.IsEnabled = false;
         try
         {
-            if (_pipeline.State == PipelineState.Running && _settings.TranslationEngine == TranslationEngineKind.Local)
+            if (_pipeline.State == PipelineState.Running &&
+                _settings.TranslationEngine == TranslationEngineKind.Local)
                 _pipeline.Stop();
 
             var offload = await _llamaManager.StopAndOffloadAsync();
@@ -1538,17 +1570,18 @@ public partial class MainWindow : Window
     private void RefreshLanguageCombos(string? pendingMissingLangCode = null)
     {
         bool en = IsEnglishUi;
+        bool oneOcrReady = _settings.OcrEngine == OcrEngineKind.OneOcr && OneOcrNativeEngine.CheckAvailability().IsAvailable;
         var sourceItems = new List<SourceLanguageItem>(LanguageCatalog.SupportedLanguages.Count);
         foreach (var lang in LanguageCatalog.SupportedLanguages)
         {
-            bool installed = WindowsOcrService.IsLanguageOcrInstalled(lang.Code, out _);
+            bool installed = oneOcrReady || WindowsOcrService.IsLanguageOcrInstalled(lang.Code, out _);
             sourceItems.Add(new SourceLanguageItem
             {
                 Code = lang.Code,
                 DisplayName = LanguageCatalog.GetDisplayName(lang.Code, en),
                 IsInstalled = installed,
                 StatusText = installed
-                    ? (en ? "✓ Installed" : "✓ Kurulu")
+                    ? (oneOcrReady ? (en ? "✓ OneOCR" : "✓ OneOCR") : (en ? "✓ Installed" : "✓ Kurulu"))
                     : (en ? "No OCR pack" : "Paketi yok"),
                 NameBrush = installed ? BrushInstalledName : BrushMissingName,
                 NameWeight = installed ? FontWeights.SemiBold : FontWeights.Normal,
@@ -1695,7 +1728,8 @@ public partial class MainWindow : Window
         if (string.Equals(newSource, newTarget, StringComparison.OrdinalIgnoreCase))
             return;
 
-        if (!WindowsOcrService.IsLanguageOcrInstalled(newSource, out _))
+        bool oneOcrReady = _settings.OcrEngine == OcrEngineKind.OneOcr && OneOcrNativeEngine.CheckAvailability().IsAvailable;
+        if (!oneOcrReady && !WindowsOcrService.IsLanguageOcrInstalled(newSource, out _))
         {
             RefreshLanguageCombos(pendingMissingLangCode: newSource);
             string newSrcName = LanguageCatalog.GetShortName(newSource, IsEnglishUi);
@@ -1803,7 +1837,7 @@ public partial class MainWindow : Window
 
         // Sekme 1: Genel
         EngineSelectorHeaderText.Text = en ? "Translation Engine Selection" : "Çeviri Motoru Seçimi";
-        EngineLocalTitleText.Text = en ? "Local (TranslateGemma): offline, more natural" : "Yerel (TranslateGemma): internetsiz, daha doğal";
+        EngineLocalTitleText.Text = en ? "Local (TranslateGemma): offline, pure translation" : "Yerel (TranslateGemma): internetsiz, daha doğal";
         EngineLocalDescText.Text = en
             ? "Runs on NVIDIA RTX GPU. Downloads llama.cpp and TranslateGemma 4B on first use."
             : "RTX GPU üzerinde çalışır. İlk seferde llama.cpp ve TranslateGemma 4B indirilir.";
@@ -1922,7 +1956,11 @@ public partial class MainWindow : Window
         AdvQuantLabelText.Text = en ? "Model Quantization (Quality ↔ Speed)" : "Model Niceleme (Kalite ↔ Hız)";
         AdvBackendLabelText.Text = en ? "GPU / Backend" : "GPU / Arka Uç";
         AdvStabilityLabelText.Text = en ? "Speed ↔ Stability (Frames)" : "Hız ↔ Kararlılık (Kare)";
+        AdvOcrEngineLabelText.Text = en ? "OCR Engine" : "OCR Motoru";
         AdvThreadsLabelText.Text = en ? "CPU Thread Count" : "CPU Thread Sayısı";
+        LocalizeComboItems(OcrEngineCombo, en
+            ? new Dictionary<string, string> { ["WindowsOcr"] = "Windows OCR (Built-in)", ["OneOcr"] = "OneOCR (Win11 Smart ONNX • Multi-Lang)" }
+            : new Dictionary<string, string> { ["WindowsOcr"] = "Windows OCR (Yerleşik)", ["OneOcr"] = "OneOCR (Win11 Akıllı ONNX • Çoklu Dil)" });
         LocalizeComboItems(QuantSelectionCombo, en
             ? new Dictionary<string, string> { ["Q8_0"] = "Q8_0 (~3.85 GB — High Quality, Default)", ["Q4_K_M"] = "Q4_K_M (~2.32 GB — Faster & Lighter)" }
             : new Dictionary<string, string> { ["Q8_0"] = "Q8_0 (~3.85 GB — Yüksek Kalite, Varsayılan)", ["Q4_K_M"] = "Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)" });
@@ -1964,6 +2002,7 @@ public partial class MainWindow : Window
         // Dinamik içerikler
         UpdateStyleSliderLabels(_settings.ActiveStyle);
         UpdateDebounceLabel();
+        UpdateOcrConfidenceUi();
         RefreshLanguageCombos();
         UpdateLanguagePairLabels();
         if (!_isInstallingOcr)

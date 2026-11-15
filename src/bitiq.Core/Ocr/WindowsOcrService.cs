@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Bitiq.Core.Capture;
+using Bitiq.Core.Models;
 using Bitiq.Core.Translation;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
@@ -22,6 +23,7 @@ public sealed record OcrFrameResult(
 public sealed class WindowsOcrService : IDisposable
 {
     private volatile OcrEngine? _engine;
+    private readonly OneOcrNativeEngine _oneOcr = new();
     private readonly SemaphoreSlim _signal = new(0, 1);
     private readonly CancellationTokenSource _cts = new();
     private readonly object _glyphCacheLock = new();
@@ -29,6 +31,8 @@ public sealed class WindowsOcrService : IDisposable
     private CapturedFrameData? _pendingFrame;
     private int _isProcessing;
     private bool _preprocessEnabled;
+    private OcrEngineKind _engineKind = OcrEngineKind.WindowsOcr;
+    private double _minWordConfidence = 0.45;
     private bool _disposed;
 
     private byte[]? _lastGlyphGrid;
@@ -36,7 +40,9 @@ public sealed class WindowsOcrService : IDisposable
     private int _lastMaskHeight;
     private string _lastOcrResult = string.Empty;
 
-    public bool IsAvailable => _engine is not null;
+    public bool IsAvailable => _engineKind == OcrEngineKind.OneOcr ? Status.IsAvailable : _engine is not null;
+    public OcrEngineKind ActiveEngineKind => _engineKind;
+    public double MinWordConfidence => _minWordConfidence;
     public string? ActiveLanguageTag { get; private set; }
     public OcrCheckResult Status { get; private set; } = new(false, null, null, null);
     public string ActiveSourceLanguageCode { get; private set; } = "en";
@@ -44,11 +50,27 @@ public sealed class WindowsOcrService : IDisposable
     public event Action<OcrFrameResult>? TextRecognized;
     public event Action<string>? ErrorOccurred;
 
-    public WindowsOcrService(bool preprocessEnabled = false, string sourceLanguageCode = "en")
+    public WindowsOcrService(
+        bool preprocessEnabled = false,
+        string sourceLanguageCode = "en",
+        OcrEngineKind engineKind = OcrEngineKind.WindowsOcr,
+        double minWordConfidence = 0.45)
     {
         _preprocessEnabled = preprocessEnabled;
+        _engineKind = engineKind;
+        _minWordConfidence = Math.Clamp(minWordConfidence, 0.0, 0.95);
         Status = SetSourceLanguage(sourceLanguageCode);
         _ = Task.Run(() => WorkerLoopAsync(_cts.Token));
+    }
+
+    public OcrCheckResult ConfigureEngine(
+        OcrEngineKind engineKind,
+        double minWordConfidence,
+        string? sourceLanguageCode = null)
+    {
+        _engineKind = engineKind;
+        _minWordConfidence = Math.Clamp(minWordConfidence, 0.0, 0.95);
+        return SetSourceLanguage(sourceLanguageCode ?? ActiveSourceLanguageCode);
     }
 
     public OcrCheckResult SetSourceLanguage(string langCode)
@@ -56,6 +78,26 @@ public sealed class WindowsOcrService : IDisposable
         var descriptor = LanguageCatalog.GetByCode(langCode);
         bool isEnglish = string.Equals(descriptor.Code, "en", StringComparison.OrdinalIgnoreCase);
         SubtitleStabilizer.IsEnglishSourceMode = isEnglish;
+
+        if (_engineKind == OcrEngineKind.OneOcr)
+        {
+            var availability = OneOcrNativeEngine.CheckAvailability();
+            string? initErr = null;
+            OcrCheckResult oneOcrResult = availability.IsAvailable && _oneOcr.EnsureInitialized(out initErr)
+                ? new OcrCheckResult(true, $"oneocr-{descriptor.Code}", null, null)
+                : new OcrCheckResult(
+                    false,
+                    null,
+                    initErr ?? availability.ErrorMessage ?? "OneOCR başlatılamadı.",
+                    availability.FixInstructions);
+
+            _engine = null;
+            ActiveSourceLanguageCode = descriptor.Code;
+            ActiveLanguageTag = oneOcrResult.LanguageTag;
+            Status = oneOcrResult;
+            ResetGlyphCache();
+            return oneOcrResult;
+        }
 
         OcrEngine? newEngine;
         OcrCheckResult result;
@@ -269,7 +311,7 @@ public sealed class WindowsOcrService : IDisposable
     /// </summary>
     public void EnqueueFrame(CapturedFrameData frame)
     {
-        if (_disposed || _engine is null)
+        if (_disposed || !IsAvailable)
             return;
 
         Interlocked.Exchange(ref _pendingFrame, frame);
@@ -341,8 +383,27 @@ public sealed class WindowsOcrService : IDisposable
         int height,
         bool preprocess)
     {
-        if (_engine is null)
-            throw new InvalidOperationException("İngilizce OCR motoru hazır değil.");
+        if (!IsAvailable)
+            throw new InvalidOperationException(Status.ErrorMessage ?? "OCR motoru hazır değil.");
+
+        // OneOCR modern sinir ağı ham anti-aliased görüntülerde en iyi sonucu verir ve
+        // parlak sahnelerdeki glyphGrid önbellek çakışmasından etkilenmez.
+        if (_engineKind == OcrEngineKind.OneOcr)
+        {
+            string oneOcrText = await RecognizeOneOcrBufferAsync(bgraPixels, width, height).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(oneOcrText) || !preprocess)
+                return oneOcrText;
+
+            // Nadir durumlarda ham okuma boşsa ön işlemeli maskeyi yedek olarak dene
+            byte[] backupProcessed = PreprocessSubtitleRegionCore(
+                bgraPixels,
+                width,
+                height,
+                out int bW,
+                out int bH,
+                out _);
+            return await RecognizeBufferAsync(backupProcessed, bW, bH).ConfigureAwait(false);
+        }
 
         if (preprocess && width is >= 8 and <= 2560 && height is >= 8 and <= 600)
         {
@@ -389,6 +450,17 @@ public sealed class WindowsOcrService : IDisposable
         if (string.IsNullOrWhiteSpace(rawText))
             ResetGlyphCache();
         return rawText;
+    }
+
+    private Task<string> RecognizeOneOcrBufferAsync(byte[] bgraPixels, int width, int height)
+    {
+        if (height < 96 && width is >= 8 and <= 1920)
+        {
+            byte[] upscaled = UpscaleBgraBicubic2x(bgraPixels, width, height, out int upW, out int upH);
+            return RecognizeBufferAsync(upscaled, upW, upH);
+        }
+
+        return RecognizeBufferAsync(bgraPixels, width, height);
     }
 
     private Task<string> RecognizeFallbackAsync(byte[] bgraPixels, int width, int height)
@@ -495,12 +567,12 @@ public sealed class WindowsOcrService : IDisposable
             {
                 byte cur = glyphGrid[i];
                 byte prev = _lastGlyphGrid[i];
-                if (cur > 4 || prev > 4)
+                if (cur > 20 || prev > 20)
                 {
                     activeCells++;
                     int diff = Math.Abs(cur - prev);
                     sumDiff += diff;
-                    if (diff > 38)
+                    if (diff > 32)
                         changedCells++;
                 }
             }
@@ -509,7 +581,7 @@ public sealed class WindowsOcrService : IDisposable
                 return false;
 
             double avgDiff = (double)sumDiff / activeCells;
-            if (avgDiff < 8.0 && changedCells <= 6)
+            if (avgDiff < 6.0 && changedCells <= 2)
             {
                 cachedText = _lastOcrResult;
                 return true;
@@ -532,6 +604,16 @@ public sealed class WindowsOcrService : IDisposable
 
     private async Task<string> RecognizeBufferAsync(byte[] bgraPixels, int width, int height)
     {
+        if (_engineKind == OcrEngineKind.OneOcr)
+        {
+            return _oneOcr.RecognizeText(
+                bgraPixels,
+                width,
+                height,
+                _minWordConfidence,
+                ActiveSourceLanguageCode);
+        }
+
         var engine = _engine;
         if (engine is null)
             return string.Empty;
@@ -543,85 +625,45 @@ public sealed class WindowsOcrService : IDisposable
         if (result?.Lines is null || result.Lines.Count == 0)
             return string.Empty;
 
-        return JoinOcrLines(OrderOcrLinesTopToBottomLeftToRight(result.Lines));
+        return GroupWindowsOcrLines(result.Lines, ActiveSourceLanguageCode);
     }
 
-    private static List<string> OrderOcrLinesTopToBottomLeftToRight(IReadOnlyList<OcrLine> ocrLines)
+    private static string GroupWindowsOcrLines(IReadOnlyList<OcrLine> ocrLines, string sourceLanguageCode)
     {
-        var fragments = new List<(double CenterY, double MinX, double Height, string Text)>(ocrLines.Count);
-        foreach (var line in ocrLines)
+        var words = new List<OcrWordElement>(ocrLines.Count * 5);
+        for (int lineIndex = 0; lineIndex < ocrLines.Count; lineIndex++)
         {
-            string trimmed = line.Text.Trim();
-            if (trimmed.Length == 0)
+            var line = ocrLines[lineIndex];
+            if (line.Words.Count == 0)
+            {
+                string trimmed = line.Text.Trim();
+                if (trimmed.Length > 0)
+                {
+                    words.Add(new OcrWordElement(trimmed, new OcrBoundingBox(0, lineIndex * 24.0, 100, 20), 1.0));
+                }
                 continue;
+            }
 
-            double minX = double.MaxValue;
-            double sumCenterY = 0;
-            double maxH = 0;
-            int wordCount = 0;
             foreach (var word in line.Words)
             {
+                string text = word.Text.Trim();
+                if (text.Length == 0)
+                    continue;
+
                 var rect = word.BoundingRect;
-                if (rect.X < minX)
-                    minX = rect.X;
-                sumCenterY += rect.Y + (rect.Height * 0.5);
-                if (rect.Height > maxH)
-                    maxH = rect.Height;
-                wordCount++;
-            }
-
-            if (wordCount == 0)
-                fragments.Add((0, 0, 20, trimmed));
-            else
-                fragments.Add((sumCenterY / wordCount, minX, maxH, trimmed));
-        }
-
-        if (fragments.Count <= 1)
-            return fragments.Select(f => f.Text).ToList();
-
-        fragments.Sort((a, b) => a.CenterY.CompareTo(b.CenterY));
-
-        var rows = new List<(double AvgY, double MaxH, List<(double MinX, string Text)> Items)>();
-        foreach (var frag in fragments)
-        {
-            bool placed = false;
-            for (int r = 0; r < rows.Count; r++)
-            {
-                var row = rows[r];
-                double tolerance = Math.Max(10.0, Math.Max(row.MaxH, frag.Height) * 0.65);
-                if (Math.Abs(frag.CenterY - row.AvgY) <= tolerance)
-                {
-                    int n = row.Items.Count;
-                    double newAvgY = ((row.AvgY * n) + frag.CenterY) / (n + 1);
-                    row.Items.Add((frag.MinX, frag.Text));
-                    rows[r] = (newAvgY, Math.Max(row.MaxH, frag.Height), row.Items);
-                    placed = true;
-                    break;
-                }
-            }
-
-            if (!placed)
-            {
-                rows.Add((frag.CenterY, frag.Height, [(frag.MinX, frag.Text)]));
+                words.Add(new OcrWordElement(
+                    text,
+                    new OcrBoundingBox(rect.X, rect.Y, Math.Max(1.0, rect.Width), Math.Max(1.0, rect.Height)),
+                    1.0));
             }
         }
 
-        rows.Sort((a, b) => a.AvgY.CompareTo(b.AvgY));
-        var ordered = new List<string>(rows.Count);
-        foreach (var row in rows)
-        {
-            if (row.Items.Count == 1)
-            {
-                ordered.Add(row.Items[0].Text);
-            }
-            else
-            {
-                row.Items.Sort((a, b) => a.MinX.CompareTo(b.MinX));
-                ordered.Add(string.Join(" ", row.Items.Select(x => x.Text)));
-            }
-        }
-
-        return ordered;
+        return OcrBlockGrouper.GroupAndFormat(
+            words,
+            new OcrGroupingOptions(
+                MinWordConfidence: 0.0,
+                SourceLanguageCode: sourceLanguageCode,
+                AutoDetectVerticalText: true));
     }
 
     public static string JoinOcrLines(IReadOnlyList<string> lines)
@@ -1284,5 +1326,6 @@ public sealed class WindowsOcrService : IDisposable
         _cts.Cancel();
         _signal.Dispose();
         _cts.Dispose();
+        _oneOcr.Dispose();
     }
 }

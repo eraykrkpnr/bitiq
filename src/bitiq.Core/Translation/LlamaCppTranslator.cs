@@ -7,7 +7,7 @@ using Bitiq.Core.Models;
 namespace Bitiq.Core.Translation;
 
 /// <summary>
-/// llama-server.exe /completion uç noktası üzerinden TranslateGemma 4B ile düşük gecikmeli akışlı çeviri yapar.
+/// llama-server.exe /completion uç noktası üzerinden yerel TranslateGemma 4B ile düşük gecikmeli akışlı çeviri yapar.
 /// </summary>
 public sealed class LlamaCppTranslator : ITranslator
 {
@@ -21,6 +21,8 @@ public sealed class LlamaCppTranslator : ITranslator
     {
         Timeout = Timeout.InfiniteTimeSpan
     };
+
+    private static readonly string[] GemmaStopTokens = ["<end_of_turn>", "<eos>"];
 
     private readonly LlamaServerManager _serverManager;
     private readonly TranslationLruCache _cache;
@@ -73,9 +75,8 @@ public sealed class LlamaCppTranslator : ITranslator
         // Açılışta prefix cache ısınma isteği (sabit talimat ön ekini KV önbelleğe alır)
         _statusText = "Model ısıtılıyor (ön ek önbelleği)…";
         await TranslateAsync("Ready.", "en", "tr", stream: false, onProgress: null, ct).ConfigureAwait(false);
-        // "Ready." ısınma çevirisini LRU'da tutmakta sakınca yok hatta faydalı, ancak hazır durumunu koru
         _isReady = true;
-        _statusText = $"Hazır (Yerel • {_serverManager.ActiveBackendKey})";
+        _statusText = $"Hazır ({_serverManager.ActiveBackendKey})";
     }
 
     /// <summary>
@@ -146,13 +147,14 @@ public sealed class LlamaCppTranslator : ITranslator
         var requestBody = new
         {
             prompt,
-            temperature = 0.0,
-            top_k = 1,
-            top_p = 1.0,
+            temperature = 0.15,
+            top_k = 20,
+            top_p = 0.88,
+            repeat_penalty = 1.05,
             n_predict = nPredict,
             cache_prompt = true,
             stream,
-            stop = new[] { "<end_of_turn>", "<eos>" }
+            stop = GemmaStopTokens
         };
 
         string jsonPayload = JsonSerializer.Serialize(requestBody);

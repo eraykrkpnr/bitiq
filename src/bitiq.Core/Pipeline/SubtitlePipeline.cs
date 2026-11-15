@@ -23,6 +23,7 @@ public sealed partial class SubtitlePipeline : IDisposable
 {
     private const int IncompleteSentenceTimeoutMs = 10000;
     private const int MaxMergedSentenceLength = 220;
+    private const int MaxConsecutiveTransientErrors = 10;
 
     private readonly WgcRegionCaptureService _captureService;
     private readonly WindowsOcrService _ocrService;
@@ -49,6 +50,8 @@ public sealed partial class SubtitlePipeline : IDisposable
     private double _lastCaptureMs;
     private double _lastChangeDetectMs;
     private long _lastFrameTimestampTicks;
+    private int _consecutiveCaptureErrors;
+    private int _consecutiveOcrErrors;
     private PipelineState _state = PipelineState.Stopped;
     private bool _disposed;
 
@@ -71,9 +74,9 @@ public sealed partial class SubtitlePipeline : IDisposable
         _stabilizer = new SubtitleStabilizer();
 
         _captureService.FrameChanged += OnFrameChanged;
-        _captureService.ErrorOccurred += err => SetState(PipelineState.Error, err);
+        _captureService.ErrorOccurred += OnCaptureErrorOccurred;
         _ocrService.TextRecognized += OnOcrTextRecognized;
-        _ocrService.ErrorOccurred += err => SetState(PipelineState.Error, err);
+        _ocrService.ErrorOccurred += OnOcrErrorOccurred;
     }
 
     public async Task StartAsync(CancellationToken ct = default, IntPtr targetWindowHwnd = default)
@@ -82,9 +85,9 @@ public sealed partial class SubtitlePipeline : IDisposable
         if (settings.CaptureRegion is not { IsValid: true })
             throw new InvalidOperationException("Önce 'Çevrilecek alanı seç' ile ekranda bir altyazı bölgesi seçin.");
 
-        _ocrService.SetSourceLanguage(settings.SourceLanguage);
+        _ocrService.ConfigureEngine(settings.OcrEngine, settings.OcrMinConfidence, settings.SourceLanguage);
         if (!_ocrService.IsAvailable)
-            throw new InvalidOperationException(_ocrService.Status.ErrorMessage ?? "Windows OCR paketi hazır değil.");
+            throw new InvalidOperationException(_ocrService.Status.ErrorMessage ?? "OCR motoru hazır değil.");
 
         if (settings.CaptureRegion.IsWindowLocked && targetWindowHwnd == IntPtr.Zero)
         {
@@ -111,6 +114,8 @@ public sealed partial class SubtitlePipeline : IDisposable
         _ocrService.SetPreprocessEnabled(settings.OcrPreprocessEnabled);
         _ocrService.ResetGlyphCache();
         ResetIncompleteBuffer();
+        Volatile.Write(ref _consecutiveCaptureErrors, 0);
+        Volatile.Write(ref _consecutiveOcrErrors, 0);
         Volatile.Write(ref _currentlyDisplayedTurkish, string.Empty);
 
         var translator = _translatorProvider();
@@ -140,9 +145,13 @@ public sealed partial class SubtitlePipeline : IDisposable
 
     public void ApplyLiveSettings(AppSettings settings)
     {
-        if (!string.Equals(_ocrService.ActiveSourceLanguageCode, settings.SourceLanguage, StringComparison.OrdinalIgnoreCase))
+        bool ocrChanged = _ocrService.ActiveEngineKind != settings.OcrEngine
+            || Math.Abs(_ocrService.MinWordConfidence - settings.OcrMinConfidence) > 0.001
+            || !string.Equals(_ocrService.ActiveSourceLanguageCode, settings.SourceLanguage, StringComparison.OrdinalIgnoreCase);
+
+        if (ocrChanged)
         {
-            _ocrService.SetSourceLanguage(settings.SourceLanguage);
+            _ocrService.ConfigureEngine(settings.OcrEngine, settings.OcrMinConfidence, settings.SourceLanguage);
             _stabilizer.Reset();
             ResetIncompleteBuffer();
         }
@@ -166,6 +175,7 @@ public sealed partial class SubtitlePipeline : IDisposable
         if (_state != PipelineState.Running)
             return;
 
+        Volatile.Write(ref _consecutiveCaptureErrors, 0);
         _lastCaptureMs = frame.CaptureMs;
         _lastChangeDetectMs = frame.ChangeDetectMs;
         _lastFrameTimestampTicks = frame.CapturedAtTimestamp;
@@ -177,9 +187,50 @@ public sealed partial class SubtitlePipeline : IDisposable
         if (_state != PipelineState.Running)
             return;
 
+        Volatile.Write(ref _consecutiveOcrErrors, 0);
         long nowMs = Environment.TickCount64;
         var decision = _stabilizer.Process(ocrResult.Text, nowMs);
         HandleDecision(decision, ocrResult.OcrMs, ocrResult.CapturedAtTimestamp);
+    }
+
+    private void OnCaptureErrorOccurred(string error)
+    {
+        if (_state != PipelineState.Running)
+            return;
+
+        if (Interlocked.Increment(ref _consecutiveCaptureErrors) < MaxConsecutiveTransientErrors)
+        {
+            SetState(PipelineState.Running, $"Geçici yakalama uyarısı: {error}");
+            return;
+        }
+
+        HandleFatalPipelineError(error);
+    }
+
+    private void OnOcrErrorOccurred(string error)
+    {
+        if (_state != PipelineState.Running)
+            return;
+
+        if (Interlocked.Increment(ref _consecutiveOcrErrors) < MaxConsecutiveTransientErrors)
+        {
+            SetState(PipelineState.Running, $"Geçici OCR uyarısı: {error}");
+            return;
+        }
+
+        HandleFatalPipelineError(error);
+    }
+
+    private void HandleFatalPipelineError(string error)
+    {
+        _debouncePollTimer?.Dispose();
+        _debouncePollTimer = null;
+        _captureService.Stop();
+        CancelActiveTranslation();
+        CancelPendingClear();
+        _stabilizer.Reset();
+        EmitClear();
+        SetState(PipelineState.Error, error);
     }
 
     private void OnDebounceTick()
@@ -197,10 +248,6 @@ public sealed partial class SubtitlePipeline : IDisposable
                 WindowEnumerationService.EnsureWindowRenderableInBackground(targetHwnd);
             }
         }
-
-        var settings = _settingsProvider();
-        if (settings.TypewriterDebounceMs <= 0)
-            return;
 
         var decision = _stabilizer.PollDebounce(nowMs);
         if (decision.Action != StabilizerAction.None)
