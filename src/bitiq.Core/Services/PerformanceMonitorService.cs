@@ -5,6 +5,13 @@ using System.Text;
 
 namespace Bitiq.Core.Services;
 
+public sealed record VramBudgetSnapshot(
+    bool Available,
+    string GpuName,
+    double TotalMb,
+    double UsedMb,
+    double FreeMb);
+
 public sealed record PerformanceSnapshot
 {
     public double AppCpuPercent { get; init; }
@@ -228,6 +235,60 @@ public sealed class PerformanceMonitorService : IDisposable
             TotalVramUsedMb = Math.Round(totalVramUsedMb, 1),
             TotalVramCapacityMb = Math.Round(totalVramCapMb, 1)
         };
+    }
+
+    /// <summary>
+    /// Harici süreç başlatmadan GPU toplam ve boş VRAM bilgisini döndürür (ön kontrol için).
+    /// </summary>
+    public static VramBudgetSnapshot QueryVramBudget()
+    {
+        try
+        {
+            using var svc = new PerformanceMonitorService();
+            if (!svc.TryEnsureNvmlInitialized() || svc._nvmlDevice == IntPtr.Zero || svc._nvmlGetMemoryInfo is null)
+                return new VramBudgetSnapshot(false, "Algılanmadı", 0, 0, 0);
+
+            if (svc._nvmlGetMemoryInfo(svc._nvmlDevice, out var mem) == 0 && mem.total > 0)
+            {
+                double totalMb = mem.total / (1024.0 * 1024.0);
+                double usedMb = mem.used / (1024.0 * 1024.0);
+                double freeMb = mem.free / (1024.0 * 1024.0);
+                return new VramBudgetSnapshot(true, svc._gpuName, Math.Round(totalMb, 1), Math.Round(usedMb, 1), Math.Round(freeMb, 1));
+            }
+        }
+        catch { }
+
+        return new VramBudgetSnapshot(false, "Algılanmadı", 0, 0, 0);
+    }
+
+    /// <summary>
+    /// Simülasyon açıksa karttaki gerçek dolu belleği koruyarak toplam/boş VRAM'i seçilen limite göre sınırlar.
+    /// </summary>
+    public static VramBudgetSnapshot QueryEffectiveVramBudget(bool simulateEnabled, double simulatedLimitGb)
+        => ApplySimulatedVramLimit(QueryVramBudget(), simulateEnabled, simulatedLimitGb);
+
+    /// <summary>
+    /// Verilen gerçek VRAM anlık görüntüsüne simüle edilmiş kapasite sınırını deterministik olarak uygular.
+    /// </summary>
+    public static VramBudgetSnapshot ApplySimulatedVramLimit(
+        VramBudgetSnapshot real,
+        bool simulateEnabled,
+        double simulatedLimitGb)
+    {
+        if (!real.Available || !simulateEnabled)
+            return real;
+
+        double clampedGb = Math.Clamp(simulatedLimitGb, 4.0, 32.0);
+        double simTotalMb = clampedGb * 1024.0;
+        double systemReservedMb = Math.Max(0.0, real.TotalMb - real.UsedMb - real.FreeMb);
+        double simFreeMb = Math.Max(0.0, simTotalMb - real.UsedMb - systemReservedMb);
+
+        return new VramBudgetSnapshot(
+            Available: true,
+            GpuName: $"{real.GpuName} (Simüle {clampedGb:0.#} GB)",
+            TotalMb: Math.Round(simTotalMb, 1),
+            UsedMb: real.UsedMb,
+            FreeMb: Math.Round(simFreeMb, 1));
     }
 
     private bool TryEnsureNvmlInitialized()

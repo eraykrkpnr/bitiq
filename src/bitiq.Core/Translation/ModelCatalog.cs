@@ -14,9 +14,39 @@ public static class ModelCatalog
 {
     public const string LlamaReleaseTag = "b12378";
     public const string ModelRepoId = "mradermacher/translategemma-4b-it-GGUF";
+    public const string HyMt2RepoId = "tencent/Hy-MT2-7B-GGUF";
 
-    // Doğrulanmış Hugging Face açık (gated=false) TranslateGemma 4B GGUF dosyaları
+    public static ModelQuantization ResolveQuantization(LocalModelKind model, ModelQuantization requested) => model switch
+    {
+        LocalModelKind.HyMt2_7B => ModelQuantization.Q6_K,
+        _ => requested == ModelQuantization.Q6_K ? ModelQuantization.Q8_0 : requested
+    };
+
+    public static DownloadArtifactSpec GetModelSpec(LocalModelKind model, ModelQuantization quantization)
+    {
+        ModelQuantization resolved = ResolveQuantization(model, quantization);
+        return model switch
+        {
+            LocalModelKind.HyMt2_7B => new DownloadArtifactSpec(
+                Id: "hy-mt2-7b-q6_k",
+                DisplayName: "Hy-MT2 7B (Q6_K — Bağlamlı, RTX 3080 10 GB)",
+                Url: "https://huggingface.co/tencent/Hy-MT2-7B-GGUF/resolve/main/HY-MT2-7B-Q6_K.gguf",
+                ExpectedSizeBytes: 6164482720L,
+                ExpectedSha256: "88ef0aba59952a4cfe4be36cb5baf797dbb370bc60e9dcbd7297036021e52831",
+                FileName: "HY-MT2-7B-Q6_K.gguf"),
+
+            _ => GetTranslateGemmaSpec(resolved)
+        };
+    }
+
+    // Geriye dönük uyumluluk: Q6_K doğrudan Hy-MT2 7B'ye, Q8_0/Q4_K_M TranslateGemma 4B'ye eşlenir.
     public static DownloadArtifactSpec GetModelSpec(ModelQuantization quantization) => quantization switch
+    {
+        ModelQuantization.Q6_K => GetModelSpec(LocalModelKind.HyMt2_7B, ModelQuantization.Q6_K),
+        _ => GetTranslateGemmaSpec(quantization)
+    };
+
+    private static DownloadArtifactSpec GetTranslateGemmaSpec(ModelQuantization quantization) => quantization switch
     {
         ModelQuantization.Q8_0 => new DownloadArtifactSpec(
             Id: "translategemma-4b-q8_0",

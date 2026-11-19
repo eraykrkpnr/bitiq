@@ -28,15 +28,31 @@ public sealed class TranslationLruCache
         }
     }
 
-    public static string MakeKey(string sourceLang, string targetLang, string text)
+    public static string? ResolveFingerprint(TranslationContextSnapshot? context, string text)
     {
+        if (context is null || context.IsEmpty)
+            return null;
+
         string normalized = SubtitleStabilizer.NormalizeForComparison(text);
-        return $"{sourceLang.ToLowerInvariant()}>{targetLang.ToLowerInvariant()}:{normalized}";
+        if (string.IsNullOrEmpty(normalized))
+            return null;
+
+        // Kısa UI metinlerinde (<= 3 kelime) yalnızca oyun profiline göre önbellekle; uzun cümlelerde son geçmiş satırını da ekle
+        int wordCount = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        string fp = wordCount <= 3 ? context.ProfileFingerprint : context.FullFingerprint;
+        return string.IsNullOrEmpty(fp) ? null : fp;
     }
 
-    public bool TryGet(string sourceLang, string targetLang, string text, out string translation)
+    public static string MakeKey(string sourceLang, string targetLang, string text, string? contextFingerprint = null)
     {
-        string key = MakeKey(sourceLang, targetLang, text);
+        string normalized = SubtitleStabilizer.NormalizeForComparison(text);
+        string prefix = $"{sourceLang.ToLowerInvariant()}>{targetLang.ToLowerInvariant()}:{normalized}";
+        return string.IsNullOrEmpty(contextFingerprint) ? prefix : $"{prefix}|{contextFingerprint}";
+    }
+
+    public bool TryGet(string sourceLang, string targetLang, string text, out string translation, string? contextFingerprint = null)
+    {
+        string key = MakeKey(sourceLang, targetLang, text, contextFingerprint);
         lock (_lock)
         {
             if (_map.TryGetValue(key, out var node))
@@ -52,12 +68,12 @@ public sealed class TranslationLruCache
         return false;
     }
 
-    public void Set(string sourceLang, string targetLang, string text, string translation)
+    public void Set(string sourceLang, string targetLang, string text, string translation, string? contextFingerprint = null)
     {
         if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(translation))
             return;
 
-        string key = MakeKey(sourceLang, targetLang, text);
+        string key = MakeKey(sourceLang, targetLang, text, contextFingerprint);
         lock (_lock)
         {
             if (_map.TryGetValue(key, out var existing))

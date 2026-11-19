@@ -49,6 +49,12 @@ public sealed class ModelDownloadService
         return Path.Combine(_settingsService.ModelsDirectory, spec.FileName);
     }
 
+    public string GetModelPath(LocalModelKind model, ModelQuantization quantization)
+    {
+        var spec = ModelCatalog.GetModelSpec(model, quantization);
+        return Path.Combine(_settingsService.ModelsDirectory, spec.FileName);
+    }
+
     public string GetLlamaBackendDir(string backendKey) =>
         Path.Combine(_settingsService.LlamaDirectory, ModelCatalog.LlamaReleaseTag, backendKey);
 
@@ -57,16 +63,34 @@ public sealed class ModelDownloadService
 
     public bool IsModelReady(ModelQuantization quantization)
     {
-        string path = GetModelPath(quantization);
-        if (!File.Exists(path))
-            return false;
         var spec = ModelCatalog.GetModelSpec(quantization);
-        return new FileInfo(path).Length == spec.ExpectedSizeBytes;
+        string path = Path.Combine(_settingsService.ModelsDirectory, spec.FileName);
+        return File.Exists(path) && new FileInfo(path).Length == spec.ExpectedSizeBytes;
+    }
+
+    public bool IsModelReady(LocalModelKind model, ModelQuantization quantization)
+    {
+        var spec = ModelCatalog.GetModelSpec(model, quantization);
+        string path = Path.Combine(_settingsService.ModelsDirectory, spec.FileName);
+        return File.Exists(path) && new FileInfo(path).Length == spec.ExpectedSizeBytes;
     }
 
     public bool IsBackendReady(string backendKey) => File.Exists(GetLlamaServerExePath(backendKey));
 
+    public Task EnsureLocalAssetsAsync(
+        ModelQuantization quantization,
+        string backendKey,
+        IProgress<DownloadProgressInfo>? progress,
+        CancellationToken ct)
+    {
+        var model = quantization == ModelQuantization.Q6_K
+            ? LocalModelKind.HyMt2_7B
+            : LocalModelKind.TranslateGemma4B;
+        return EnsureLocalAssetsAsync(model, quantization, backendKey, progress, ct);
+    }
+
     public async Task EnsureLocalAssetsAsync(
+        LocalModelKind model,
         ModelQuantization quantization,
         string backendKey,
         IProgress<DownloadProgressInfo>? progress,
@@ -76,7 +100,7 @@ public sealed class ModelDownloadService
         Directory.CreateDirectory(_settingsService.LlamaDirectory);
 
         await EnsureLlamaBackendAsync(backendKey, progress, ct).ConfigureAwait(false);
-        await EnsureModelAsync(quantization, progress, ct).ConfigureAwait(false);
+        await EnsureModelAsync(model, quantization, progress, ct).ConfigureAwait(false);
     }
 
     public async Task EnsureLlamaBackendAsync(
@@ -145,12 +169,24 @@ public sealed class ModelDownloadService
         }
     }
 
-    public async Task EnsureModelAsync(
+    public Task EnsureModelAsync(
         ModelQuantization quantization,
         IProgress<DownloadProgressInfo>? progress,
         CancellationToken ct)
     {
-        var spec = ModelCatalog.GetModelSpec(quantization);
+        var model = quantization == ModelQuantization.Q6_K
+            ? LocalModelKind.HyMt2_7B
+            : LocalModelKind.TranslateGemma4B;
+        return EnsureModelAsync(model, quantization, progress, ct);
+    }
+
+    public async Task EnsureModelAsync(
+        LocalModelKind model,
+        ModelQuantization quantization,
+        IProgress<DownloadProgressInfo>? progress,
+        CancellationToken ct)
+    {
+        var spec = ModelCatalog.GetModelSpec(model, quantization);
         string destPath = Path.Combine(_settingsService.ModelsDirectory, spec.FileName);
         await DownloadWithResumeAndVerifyAsync(spec, destPath, progress, ct).ConfigureAwait(false);
     }

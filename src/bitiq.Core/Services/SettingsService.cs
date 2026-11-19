@@ -18,36 +18,16 @@ public sealed class SettingsService
 
     public SettingsService(string? customDirectory = null)
     {
-        if (customDirectory is not null)
-        {
-            SettingsDirectory = customDirectory;
-        }
-        else
-        {
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string bitiqDir = Path.Combine(localAppData, "bitiq");
-            string legacyDir = Path.Combine(localAppData, "BetterSubs");
-
-            if (!Directory.Exists(bitiqDir) && Directory.Exists(legacyDir))
-            {
-                try
-                {
-                    Directory.Move(legacyDir, bitiqDir);
-                }
-                catch
-                {
-                    bitiqDir = legacyDir;
-                }
-            }
-
-            SettingsDirectory = bitiqDir;
-        }
+        SettingsDirectory = !string.IsNullOrWhiteSpace(customDirectory)
+            ? customDirectory
+            : AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         SettingsFilePath = Path.Combine(SettingsDirectory, "settings.json");
     }
 
     public string ModelsDirectory => Path.Combine(SettingsDirectory, "models");
     public string LlamaDirectory => Path.Combine(SettingsDirectory, "llama");
+    public string ProfilesDirectory => Path.Combine(SettingsDirectory, "profiles");
 
     public AppSettings Load()
     {
@@ -66,17 +46,47 @@ public sealed class SettingsService
 
             var json = File.ReadAllText(SettingsFilePath);
             var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+
+            bool hasLocalModelField = false;
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (prop.Name.Equals(nameof(AppSettings.LocalModel), StringComparison.OrdinalIgnoreCase))
+                        {
+                            hasLocalModelField = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            bool migrated = false;
+            // Mevcut kurulumlarda LocalModel alanı yoksa kurulu TranslateGemma 4B'yi koru (beklenmedik 6.16 GB indirmeyi önle)
+            if (!hasLocalModelField && settings.FirstRunCompleted)
+            {
+                settings.LocalModel = LocalModelKind.TranslateGemma4B;
+                migrated = true;
+            }
+
+            NormalizeModelAndContextSettings(settings);
+
             if (!settings.SmartOcrDefaultApplied)
             {
                 settings.OcrPreprocessEnabled = true;
                 settings.FrameChangeThreshold = Math.Min(settings.FrameChangeThreshold, 1.2);
                 settings.SmartOcrDefaultApplied = true;
-                EnsureBuiltInProfiles(settings);
-                Save(settings);
-                return settings;
+                migrated = true;
             }
 
             EnsureBuiltInProfiles(settings);
+            if (migrated)
+                Save(settings);
+
             return settings;
         }
         catch
@@ -129,5 +139,22 @@ public sealed class SettingsService
             if (Math.Abs(profile.LetterSpacing - 0.2) < 0.001)
                 profile.LetterSpacing = 0.0;
         }
+    }
+
+    private static void NormalizeModelAndContextSettings(AppSettings settings)
+    {
+        if (settings.LocalModel == LocalModelKind.HyMt2_7B)
+        {
+            settings.LocalModelQuantization = ModelQuantization.Q6_K;
+        }
+        else if (settings.LocalModelQuantization == ModelQuantization.Q6_K)
+        {
+            settings.LocalModelQuantization = ModelQuantization.Q8_0;
+        }
+
+        settings.ContextMaxLines = Math.Clamp(settings.ContextMaxLines, 2, 16);
+        settings.ContextTrimToLines = Math.Clamp(settings.ContextTrimToLines, 1, settings.ContextMaxLines);
+        settings.ContextIdleResetSeconds = Math.Clamp(settings.ContextIdleResetSeconds, 15, 600);
+        settings.SimulatedVramLimitGb = Math.Clamp(settings.SimulatedVramLimitGb, 6.0, 24.0);
     }
 }

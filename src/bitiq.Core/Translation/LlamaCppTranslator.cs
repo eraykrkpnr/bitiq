@@ -3,11 +3,13 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using Bitiq.Core.Models;
+using Bitiq.Core.Ocr;
 
 namespace Bitiq.Core.Translation;
 
 /// <summary>
-/// llama-server.exe /completion uç noktası üzerinden yerel TranslateGemma 4B ile düşük gecikmeli akışlı çeviri yapar.
+/// llama-server.exe /completion uç noktası üzerinden yerel model (Hy-MT2 7B Q6_K veya TranslateGemma 4B) ile
+/// düşük gecikmeli, bağlam ve ön ek KV önbellek destekli akışlı çeviri yapar.
 /// </summary>
 public sealed class LlamaCppTranslator : ITranslator
 {
@@ -22,15 +24,18 @@ public sealed class LlamaCppTranslator : ITranslator
         Timeout = Timeout.InfiniteTimeSpan
     };
 
-    private static readonly string[] GemmaStopTokens = ["<end_of_turn>", "<eos>"];
-
     private readonly LlamaServerManager _serverManager;
     private readonly TranslationLruCache _cache;
+    private readonly Func<LocalModelKind> _modelSelector;
     private readonly Func<ModelQuantization> _quantSelector;
     private readonly Func<LocalBackendKind> _backendSelector;
     private readonly Func<int> _portSelector;
     private readonly Func<int> _threadsSelector;
+    private readonly Func<GameProfile?>? _warmupProfileProvider;
+    private readonly Func<bool>? _simulateVramSelector;
+    private readonly Func<double>? _simulatedVramGbSelector;
 
+    private ILocalModelProfile _activeProfile = HyMt2ModelProfile.Instance;
     private bool _includeBosInPrompt = true;
     private volatile bool _isReady;
     private volatile string _statusText = "Model hazır değil";
@@ -42,18 +47,45 @@ public sealed class LlamaCppTranslator : ITranslator
         Func<LocalBackendKind> backendSelector,
         Func<int> portSelector,
         Func<int> threadsSelector)
+        : this(
+            serverManager,
+            cache,
+            () => quantSelector() == ModelQuantization.Q6_K ? LocalModelKind.HyMt2_7B : LocalModelKind.TranslateGemma4B,
+            quantSelector,
+            backendSelector,
+            portSelector,
+            threadsSelector,
+            null)
+    {
+    }
+
+    public LlamaCppTranslator(
+        LlamaServerManager serverManager,
+        TranslationLruCache cache,
+        Func<LocalModelKind> modelSelector,
+        Func<ModelQuantization> quantSelector,
+        Func<LocalBackendKind> backendSelector,
+        Func<int> portSelector,
+        Func<int> threadsSelector,
+        Func<GameProfile?>? warmupProfileProvider = null,
+        Func<bool>? simulateVramSelector = null,
+        Func<double>? simulatedVramGbSelector = null)
     {
         _serverManager = serverManager;
         _cache = cache;
+        _modelSelector = modelSelector;
         _quantSelector = quantSelector;
         _backendSelector = backendSelector;
         _portSelector = portSelector;
         _threadsSelector = threadsSelector;
+        _warmupProfileProvider = warmupProfileProvider;
+        _simulateVramSelector = simulateVramSelector;
+        _simulatedVramGbSelector = simulatedVramGbSelector;
 
         _serverManager.StatusChanged += msg => _statusText = msg;
     }
 
-    public string EngineName => "Yerel (TranslateGemma 4B)";
+    public string EngineName => _activeProfile.EngineName;
     public bool IsReady => _isReady && _serverManager.IsRunning;
     public string StatusText => _statusText;
 
@@ -62,32 +94,59 @@ public sealed class LlamaCppTranslator : ITranslator
         _isReady = false;
         _statusText = "Model yükleniyor…";
 
+        LocalModelKind model = _modelSelector();
+        ModelQuantization quant = ModelCatalog.ResolveQuantization(model, _quantSelector());
+        ILocalModelProfile profile = model == LocalModelKind.HyMt2_7B
+            ? HyMt2ModelProfile.Instance
+            : TranslateGemmaModelProfile.Instance;
+        _activeProfile = profile;
+
         await _serverManager.StartAsync(
-            _quantSelector(),
+            model,
+            quant,
             _backendSelector(),
             _portSelector(),
             _threadsSelector(),
-            ct).ConfigureAwait(false);
+            ct,
+            _simulateVramSelector?.Invoke() ?? false,
+            _simulatedVramGbSelector?.Invoke() ?? 10.0).ConfigureAwait(false);
 
         // GGUF BOS çiftleme davranışını kontrol et
-        _includeBosInPrompt = await ShouldIncludeBosTokenAsync(ct).ConfigureAwait(false);
+        _includeBosInPrompt = await ShouldIncludeBosTokenAsync(profile, ct).ConfigureAwait(false);
 
-        // Açılışta prefix cache ısınma isteği (sabit talimat ön ekini KV önbelleğe alır)
+        // Açılışta prefix cache ısınma isteği (sabit talimat ve aktif oyun profili ön ekini KV önbelleğe alır)
         _statusText = "Model ısıtılıyor (ön ek önbelleği)…";
-        await TranslateAsync("Ready.", "en", "tr", stream: false, onProgress: null, ct).ConfigureAwait(false);
+        TranslationContextSnapshot? warmupCtx = null;
+        if (profile.SupportsContext)
+        {
+            var gameProfile = _warmupProfileProvider?.Invoke();
+            if (gameProfile is { IsEffectivelyEmpty: false })
+                warmupCtx = new TranslationContextSnapshot(gameProfile.Clone(), []);
+        }
+
+        await ExecuteCompletionAsync(
+            profile,
+            "Ready.",
+            "en",
+            "tr",
+            warmupCtx,
+            stream: false,
+            onProgress: null,
+            ct).ConfigureAwait(false);
+
         _isReady = true;
-        _statusText = $"Hazır ({_serverManager.ActiveBackendKey})";
+        _statusText = $"Hazır ({profile.EngineName} • {_serverManager.ActiveBackendKey})";
     }
 
     /// <summary>
     /// llama-server /tokenize çıktısını kontrol ederek model GGUF'unun add_bos_token=true durumunda çift BOS eklenmesini önler.
     /// </summary>
-    private async Task<bool> ShouldIncludeBosTokenAsync(CancellationToken ct)
+    private async Task<bool> ShouldIncludeBosTokenAsync(ILocalModelProfile profile, CancellationToken ct)
     {
         try
         {
             string baseUrl = _serverManager.BaseUrl;
-            var payload = JsonSerializer.Serialize(new { content = "<bos>Hello", add_special = true });
+            var payload = JsonSerializer.Serialize(new { content = profile.BosProbeText, add_special = true });
             using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/tokenize")
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
@@ -100,10 +159,9 @@ public sealed class LlamaCppTranslator : ITranslator
             using var doc = JsonDocument.Parse(body);
             if (doc.RootElement.TryGetProperty("tokens", out var tokens) && tokens.GetArrayLength() >= 2)
             {
-                // Gemma BOS token ID = 2. İlk iki token [2, 2] ise sunucu zaten otomatik BOS ekliyor demektir.
                 int t0 = tokens[0].GetInt32();
                 int t1 = tokens[1].GetInt32();
-                if (t0 == 2 && t1 == 2)
+                if (t0 == profile.BosTokenId && t1 == profile.BosTokenId)
                     return false;
             }
         }
@@ -118,12 +176,17 @@ public sealed class LlamaCppTranslator : ITranslator
         string targetLang,
         bool stream,
         Action<TranslationProgress>? onProgress,
-        CancellationToken ct)
+        CancellationToken ct,
+        TranslationContextSnapshot? context = null)
     {
         if (string.IsNullOrWhiteSpace(text))
             return new TranslationResult(string.Empty, 0, 0, false);
 
-        if (_cache.TryGet(sourceLang, targetLang, text, out var cached))
+        ILocalModelProfile profile = _activeProfile;
+        TranslationContextSnapshot? effectiveContext = profile.SupportsContext ? context : null;
+        string? cacheFingerprint = TranslationLruCache.ResolveFingerprint(effectiveContext, text);
+
+        if (_cache.TryGet(sourceLang, targetLang, text, out var cached, cacheFingerprint))
         {
             onProgress?.Invoke(new TranslationProgress(cached, true, 0, 0, true));
             return new TranslationResult(cached, 0, 0, true);
@@ -139,22 +202,79 @@ public sealed class LlamaCppTranslator : ITranslator
                 ErrorMessage: "Yerel çeviri sunucusu çalışmıyor.");
         }
 
+        var result = await ExecuteCompletionAsync(
+            profile,
+            text,
+            sourceLang,
+            targetLang,
+            effectiveContext,
+            stream,
+            onProgress,
+            ct).ConfigureAwait(false);
+
+        if (result.WasCancelled || !string.IsNullOrEmpty(result.ErrorMessage))
+            return result;
+
+        // Çıktı koruması: bağlamlı istekte boş çıktı veya bağlam kopyası oluşursa bağlamsız tek seferlik tekrar dene
+        if (effectiveContext is { IsEmpty: false }
+            && (string.IsNullOrWhiteSpace(result.TranslatedText)
+                || IsContextCopyHallucination(text, result.TranslatedText, effectiveContext.History)))
+        {
+            var fallback = await ExecuteCompletionAsync(
+                profile,
+                text,
+                sourceLang,
+                targetLang,
+                context: null,
+                stream: false,
+                onProgress: null,
+                ct).ConfigureAwait(false);
+
+            if (!fallback.WasCancelled && string.IsNullOrEmpty(fallback.ErrorMessage) && !string.IsNullOrWhiteSpace(fallback.TranslatedText))
+            {
+                _cache.Set(sourceLang, targetLang, text, fallback.TranslatedText, cacheFingerprint);
+                onProgress?.Invoke(new TranslationProgress(fallback.TranslatedText, true, fallback.FirstTokenMs, fallback.TotalMs, false));
+                return fallback;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.TranslatedText))
+        {
+            _cache.Set(sourceLang, targetLang, text, result.TranslatedText, cacheFingerprint);
+            onProgress?.Invoke(new TranslationProgress(result.TranslatedText, true, result.FirstTokenMs, result.TotalMs, false));
+        }
+
+        return result;
+    }
+
+    private async Task<TranslationResult> ExecuteCompletionAsync(
+        ILocalModelProfile profile,
+        string text,
+        string sourceLang,
+        string targetLang,
+        TranslationContextSnapshot? context,
+        bool stream,
+        Action<TranslationProgress>? onProgress,
+        CancellationToken ct)
+    {
         var sw = Stopwatch.StartNew();
         double firstTokenMs = -1;
-        string prompt = TranslateGemmaPromptBuilder.BuildPrompt(text, sourceLang, targetLang, _includeBosInPrompt);
-        int nPredict = TranslateGemmaPromptBuilder.ComputeMaxTokens(text);
+        string prompt = profile.BuildPrompt(text, sourceLang, targetLang, context, _includeBosInPrompt);
+        int nPredict = profile.ComputeMaxTokens(text);
+        int sourceLineCount = HyMt2PromptBuilder.CountNonEmptyLines(text);
+        LocalSamplingConfig sampling = profile.Sampling;
 
         var requestBody = new
         {
             prompt,
-            temperature = 0.15,
-            top_k = 20,
-            top_p = 0.88,
-            repeat_penalty = 1.05,
+            temperature = sampling.Temperature,
+            top_k = sampling.TopK,
+            top_p = sampling.TopP,
+            repeat_penalty = sampling.RepeatPenalty,
             n_predict = nPredict,
             cache_prompt = true,
             stream,
-            stop = GemmaStopTokens
+            stop = profile.StopTokens
         };
 
         string jsonPayload = JsonSerializer.Serialize(requestBody);
@@ -182,20 +302,28 @@ public sealed class LlamaCppTranslator : ITranslator
                     ? cEl.GetString() ?? string.Empty
                     : string.Empty;
 
+                ExtractTimings(doc.RootElement, out int promptTokens, out int cachedTokens, out double tokPerSec);
+
                 sw.Stop();
                 double totalMs = sw.Elapsed.TotalMilliseconds;
-                string cleaned = TranslateGemmaPromptBuilder.CleanModelOutput(rawContent);
-                if (!string.IsNullOrWhiteSpace(cleaned))
-                    _cache.Set(sourceLang, targetLang, text, cleaned);
-
-                onProgress?.Invoke(new TranslationProgress(cleaned, true, totalMs, totalMs, false));
-                return new TranslationResult(cleaned, totalMs, totalMs, false);
+                string cleaned = profile.CleanModelOutput(rawContent, sourceLineCount);
+                return new TranslationResult(
+                    cleaned,
+                    totalMs,
+                    totalMs,
+                    false,
+                    PromptTokens: promptTokens,
+                    CachedTokens: cachedTokens,
+                    TokensPerSecond: tokPerSec);
             }
 
             // Akışlı (SSE) okuma — iptal gelirse Stream kapatılır ve llama-server TCP kesilmesiyle slot üretimini derhal durdurur.
             await using var respStream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
             using var reader = new StreamReader(respStream, Encoding.UTF8);
             var accumulated = new StringBuilder();
+            int finalPromptTokens = 0;
+            int finalCachedTokens = 0;
+            double finalTokPerSec = 0;
 
             while (!ct.IsCancellationRequested)
             {
@@ -222,7 +350,7 @@ public sealed class LlamaCppTranslator : ITranslator
                             firstTokenMs = sw.Elapsed.TotalMilliseconds;
 
                         accumulated.Append(tokenText);
-                        string partialClean = TranslateGemmaPromptBuilder.CleanModelOutput(accumulated.ToString());
+                        string partialClean = profile.CleanModelOutput(accumulated.ToString(), sourceLineCount);
                         if (!string.IsNullOrEmpty(partialClean))
                         {
                             onProgress?.Invoke(new TranslationProgress(
@@ -233,6 +361,14 @@ public sealed class LlamaCppTranslator : ITranslator
                                 FromCache: false));
                         }
                     }
+                }
+
+                if (root.TryGetProperty("timings", out _) || root.TryGetProperty("tokens_cached", out _))
+                {
+                    ExtractTimings(root, out int pt, out int ctok, out double tps);
+                    if (pt > 0) finalPromptTokens = pt;
+                    if (ctok > 0) finalCachedTokens = ctok;
+                    if (tps > 0) finalTokPerSec = tps;
                 }
 
                 if (root.TryGetProperty("stop", out var stopEl) && stopEl.ValueKind == JsonValueKind.True)
@@ -246,12 +382,15 @@ public sealed class LlamaCppTranslator : ITranslator
             if (firstTokenMs < 0)
                 firstTokenMs = finalTotalMs;
 
-            string finalClean = TranslateGemmaPromptBuilder.CleanModelOutput(accumulated.ToString());
-            if (!string.IsNullOrWhiteSpace(finalClean))
-                _cache.Set(sourceLang, targetLang, text, finalClean);
-
-            onProgress?.Invoke(new TranslationProgress(finalClean, true, firstTokenMs, finalTotalMs, false));
-            return new TranslationResult(finalClean, firstTokenMs, finalTotalMs, false);
+            string finalClean = profile.CleanModelOutput(accumulated.ToString(), sourceLineCount);
+            return new TranslationResult(
+                finalClean,
+                firstTokenMs,
+                finalTotalMs,
+                false,
+                PromptTokens: finalPromptTokens,
+                CachedTokens: finalCachedTokens,
+                TokensPerSecond: finalTokPerSec);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -274,6 +413,58 @@ public sealed class LlamaCppTranslator : ITranslator
                 sw.Elapsed.TotalMilliseconds,
                 false,
                 ErrorMessage: msg);
+        }
+    }
+
+    private static bool IsContextCopyHallucination(
+        string currentSource,
+        string outputText,
+        IReadOnlyList<ContextLine> history)
+    {
+        if (history.Count == 0)
+            return false;
+
+        string outNorm = SubtitleStabilizer.NormalizeForComparison(outputText);
+        string srcNorm = SubtitleStabilizer.NormalizeForComparison(currentSource);
+        if (string.IsNullOrEmpty(outNorm) || string.IsNullOrEmpty(srcNorm))
+            return false;
+
+        foreach (var line in history)
+        {
+            string histTgtNorm = SubtitleStabilizer.NormalizeForComparison(line.Target);
+            string histSrcNorm = SubtitleStabilizer.NormalizeForComparison(line.Source);
+            if (!string.IsNullOrEmpty(histTgtNorm)
+                && string.Equals(outNorm, histTgtNorm, StringComparison.Ordinal)
+                && SubtitleStabilizer.ComputeSimilarity(srcNorm, histSrcNorm) < 0.70)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ExtractTimings(
+        JsonElement root,
+        out int promptTokens,
+        out int cachedTokens,
+        out double tokensPerSecond)
+    {
+        promptTokens = 0;
+        cachedTokens = 0;
+        tokensPerSecond = 0;
+
+        if (root.TryGetProperty("tokens_cached", out var tcEl) && tcEl.TryGetInt32(out int tc))
+            cachedTokens = tc;
+
+        if (root.TryGetProperty("timings", out var timings) && timings.ValueKind == JsonValueKind.Object)
+        {
+            if (timings.TryGetProperty("prompt_n", out var pnEl) && pnEl.TryGetInt32(out int pn))
+                promptTokens = pn;
+            if (cachedTokens == 0 && timings.TryGetProperty("cache_n", out var cnEl) && cnEl.TryGetInt32(out int cn))
+                cachedTokens = cn;
+            if (timings.TryGetProperty("predicted_per_second", out var tpsEl) && tpsEl.TryGetDouble(out double tps))
+                tokensPerSecond = Math.Round(tps, 1);
         }
     }
 

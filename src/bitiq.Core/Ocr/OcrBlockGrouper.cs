@@ -85,8 +85,17 @@ public static class OcrBlockGrouper
         if (blocks.Count == 0)
             return string.Empty;
 
-        var blockTexts = new List<string>(blocks.Count);
-        foreach (var block in blocks)
+        // Birden fazla blok varsa ve en az biri gerçek diyalogsa, arka plan tabela/HUD paraziti blokları ayıkla
+        IReadOnlyList<OcrGroupedBlock> activeBlocks = blocks;
+        if (blocks.Count > 1)
+        {
+            var nonNoise = blocks.Where(b => !IsBackgroundArtifactBlock(b)).ToList();
+            if (nonNoise.Count > 0 && nonNoise.Count < blocks.Count)
+                activeBlocks = nonNoise;
+        }
+
+        var blockTexts = new List<string>(activeBlocks.Count);
+        foreach (var block in activeBlocks)
         {
             if (block.Lines.Count == 0)
                 continue;
@@ -116,6 +125,22 @@ public static class OcrBlockGrouper
             1 => blockTexts[0],
             _ => string.Join('\n', blockTexts)
         };
+    }
+
+    private static bool IsBackgroundArtifactBlock(OcrGroupedBlock block)
+    {
+        if (block.Lines.Count > 1 || block.Lines.Count == 0 || block.Lines[0].IsVertical)
+            return false;
+
+        string text = block.Text.Trim();
+        if (string.IsNullOrEmpty(text))
+            return true;
+
+        if (SubtitleStabilizer.IsIsolatedUppercaseNoiseLine(text))
+            return true;
+
+        bool hasSentencePunct = text.Any(c => c is '.' or '!' or '?' or '\u2026');
+        return !hasSentencePunct && block.AverageConfidence < 0.72 && text.Length <= 8;
     }
 
     public static string GroupAndFormat(

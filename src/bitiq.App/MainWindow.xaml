@@ -82,6 +82,9 @@
             <Border x:Name="DriverWarningBanner" Visibility="Collapsed" Background="#451A03" BorderBrush="#F59E0B" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,8">
                 <TextBlock x:Name="DriverWarningText" Foreground="#FDE68A" FontSize="12.5" TextWrapping="Wrap" />
             </Border>
+            <Border x:Name="VramWarningBanner" Visibility="Collapsed" Background="#451A03" BorderBrush="#F59E0B" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,8">
+                <TextBlock x:Name="VramWarningText" Foreground="#FDE68A" FontSize="12.5" TextWrapping="Wrap" />
+            </Border>
             <Border x:Name="OverlapWarningBanner" Visibility="Collapsed" Background="#450A0A" BorderBrush="#EF4444" BorderThickness="1" CornerRadius="8" Padding="12,8" Margin="0,0,0,8">
                 <TextBlock x:Name="OverlapWarningText"
                            Text="⚠ Uyarı: Altyazı penceresi OCR yakalama bölgesiyle çakışıyor! Uygulamanın kendi çevirisini okumaması için altyazı katmanını 'Konumlandır' ile taşıyın veya başka bir bölge seçin."
@@ -209,8 +212,8 @@
                                     </ControlTemplate>
                                 </RadioButton.Template>
                                 <StackPanel>
-                                    <TextBlock x:Name="EngineLocalTitleText" Text="Yerel (TranslateGemma): internetsiz, daha doğal" FontSize="14.5" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
-                                    <TextBlock x:Name="EngineLocalDescText" Text="RTX GPU üzerinde çalışır. İlk seferde llama.cpp ve TranslateGemma 4B indirilir."
+                                    <TextBlock x:Name="EngineLocalTitleText" Text="Yerel AI (Hy-MT2 7B Q6_K / TranslateGemma): internetsiz, bağlamlı" FontSize="14.5" FontWeight="Bold" Foreground="#F8FAFC" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="EngineLocalDescText" Text="RTX GPU üzerinde çalışır. Hy-MT2 7B Q6_K önceki replikleri ve oyun profilini bağlam olarak kullanır."
                                                Foreground="#94A3B8" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0" />
                                 </StackPanel>
                             </RadioButton>
@@ -403,6 +406,57 @@
 
                         <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,12">
                             <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="ContextCardHeaderText" Grid.Column="0" Text="🧠 Bağlam (Context) ve Oyun Profili" FontWeight="SemiBold" Foreground="#38BDF8" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="ContextMemoryBadgeText" Grid.Column="1" Text="Bellekte: 0/8 replik" FontSize="12" Foreground="#94A3B8" VerticalAlignment="Center" />
+                                </Grid>
+                                <CheckBox x:Name="ContextEnabledCheck"
+                                          Content="Bağlam duyarlı çeviriyi etkinleştir (önceki replikler + oyun sözlüğü, Hy-MT2 7B Q6_K)"
+                                          Margin="0,0,0,8"
+                                          Checked="ContextEnabledCheck_Changed"
+                                          Unchecked="ContextEnabledCheck_Changed" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="8" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="8" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="ActiveGameProfileCombo"
+                                              Grid.Column="0"
+                                              Height="32"
+                                              SelectionChanged="ActiveGameProfileCombo_SelectionChanged" />
+                                    <Button x:Name="EditGameProfileBtn"
+                                            Grid.Column="2"
+                                            Content="⚙ Profili Düzenle"
+                                            Height="32"
+                                            Padding="12,0"
+                                            Background="#1E293B"
+                                            Foreground="#E2E8F0"
+                                            BorderBrush="#334155"
+                                            BorderThickness="1"
+                                            Click="EditGameProfileBtn_Click" />
+                                    <Button x:Name="ResetContextBtn"
+                                            Grid.Column="4"
+                                            Content="🔄 Bağlamı Sıfırla"
+                                            Height="32"
+                                            Padding="12,0"
+                                            Background="#1E293B"
+                                            Foreground="#38BDF8"
+                                            BorderBrush="#334155"
+                                            BorderThickness="1"
+                                            Click="ResetContextBtn_Click" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
                                 <CheckBox x:Name="ShowScreenOverlayMainCheck"
                                           Content="Ekranda şeffaf altyazı kutusunu göster (kapatılırsa yalnızca OBS kaynağına gönderilir)"
                                           Margin="0,0,0,8"
@@ -433,7 +487,147 @@
                 </ScrollViewer>
             </TabItem>
 
-            <!-- SEKME 2: GÖRÜNÜM (STİL SİSTEMİ) -->
+            <!-- SEKME 2: OYUN PROFİLİ (BAĞLAM & SÖZLÜK) -->
+            <TabItem x:Name="MainTabProfiles" Header="Oyun Profili">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border x:Name="ProfileModelNoticeBanner" Background="#0F172A" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Padding="10,8" Margin="0,0,0,10">
+                            <TextBlock x:Name="ProfileModelNoticeText"
+                                       Text="ℹ Oyun profili ve diyalog geçmişi Hy-MT2 7B (Q6_K) seçiliyken otomatik olarak modele bağlam olarak iletilir."
+                                       Foreground="#94A3B8"
+                                       FontSize="12"
+                                       TextWrapping="Wrap" />
+                        </Border>
+
+                        <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,12">
+                            <WrapPanel VerticalAlignment="Center">
+                                <TextBlock x:Name="ProfileEditSelectLabelText" Text="Profil:" VerticalAlignment="Center" Foreground="#CBD5E1" FontWeight="SemiBold" Margin="0,0,8,4" />
+                                <ComboBox x:Name="GameProfileEditCombo" Width="210" Height="30" Margin="0,0,8,4" SelectionChanged="GameProfileEditCombo_SelectionChanged" />
+                                <Button x:Name="NewGameProfileBtn" Content="+ Yeni" Padding="10,5" Margin="0,0,6,4" Background="#1E293B" Foreground="#38BDF8" BorderBrush="#334155" BorderThickness="1" Click="NewGameProfile_Click" />
+                                <Button x:Name="SaveGameProfileBtn" Content="Kaydet" Padding="12,5" Margin="0,0,6,4" Background="#0284C7" Foreground="White" BorderThickness="0" FontWeight="SemiBold" Click="SaveGameProfile_Click" />
+                                <Button x:Name="DeleteGameProfileBtn" Content="Sil" Padding="10,5" Margin="0,0,10,4" Background="#7F1D1D" Foreground="White" BorderThickness="0" Click="DeleteGameProfile_Click" />
+                                <Button x:Name="ExportGameProfileBtn" Content="JSON Dışa Aktar" Padding="10,5" Margin="0,0,6,4" Background="#1E293B" Foreground="#38BDF8" BorderBrush="#334155" BorderThickness="1" Click="ExportGameProfile_Click" />
+                                <Button x:Name="ImportGameProfileBtn" Content="JSON İçe Aktar" Padding="10,5" Margin="0,0,0,4" Background="#1E293B" Foreground="#38BDF8" BorderBrush="#334155" BorderThickness="1" Click="ImportGameProfile_Click" />
+                            </WrapPanel>
+                        </Border>
+
+                        <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock x:Name="ProfileMetaHeaderText" Text="Oyun Bilgileri ve Üslup" FontWeight="Bold" Foreground="#38BDF8" Margin="0,0,0,10" />
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="1.4*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock x:Name="GameTitleLabelText" Text="Oyun Adı" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBox x:Name="GameTitleBox" Height="30" Padding="8,0" VerticalContentAlignment="Center" Background="#1E293B" Foreground="#F8FAFC" BorderBrush="#334155" TextChanged="ProfileField_TextChanged" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock x:Name="GameSynopsisLabelText" Text="Kısa Özet / Tür (1-2 cümle)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <TextBox x:Name="GameSynopsisBox" Height="30" Padding="8,0" VerticalContentAlignment="Center" Background="#1E293B" Foreground="#F8FAFC" BorderBrush="#334155" TextChanged="ProfileField_TextChanged" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock x:Name="GameToneLabelText" Text="Üslup ve Hitap Notu (ör. 'Doğal konuşma dili; yakın arkadaşlar sen diye hitap eder')" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                <TextBox x:Name="GameToneBox" Height="30" Padding="8,0" VerticalContentAlignment="Center" Background="#1E293B" Foreground="#F8FAFC" BorderBrush="#334155" TextChanged="ProfileField_TextChanged" />
+                            </StackPanel>
+                        </Border>
+
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Karakterler -->
+                            <Border Grid.Column="0" Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="12">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,8">
+                                        <TextBlock x:Name="CharactersHeaderText" Text="Karakterler (Ad / Cinsiyet-Rol)" FontWeight="Bold" Foreground="#38BDF8" VerticalAlignment="Center" />
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <Button x:Name="AddCharacterBtn" Content="+ Ekle" Padding="8,3" Margin="0,0,6,0" Background="#1E293B" Foreground="#4ADE80" BorderBrush="#334155" BorderThickness="1" Click="AddCharacterRow_Click" />
+                                            <Button x:Name="RemoveCharacterBtn" Content="Sil" Padding="8,3" Background="#7F1D1D" Foreground="White" BorderThickness="0" Click="RemoveCharacterRow_Click" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <DataGrid x:Name="CharactersGrid"
+                                              Height="165"
+                                              AutoGenerateColumns="False"
+                                              CanUserAddRows="False"
+                                              Background="#0B0F19"
+                                              Foreground="#E2E8F0"
+                                              RowBackground="#111827"
+                                              AlternatingRowBackground="#1E293B"
+                                              GridLinesVisibility="Horizontal"
+                                              HeadersVisibility="Column"
+                                              BorderBrush="#334155"
+                                              CellEditEnding="ProfileGrid_CellEditEnding">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn x:Name="ColCharName" Header="Ad" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="0.9*" />
+                                            <DataGridTextColumn x:Name="ColCharNote" Header="Not (cinsiyet/rol)" Binding="{Binding Note, UpdateSourceTrigger=PropertyChanged}" Width="1.2*" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Sözlük / Terimler -->
+                            <Border Grid.Column="2" Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="12">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,8">
+                                        <TextBlock x:Name="GlossaryHeaderText" Text="Sözlük / Terimler (X → Y)" FontWeight="Bold" Foreground="#38BDF8" VerticalAlignment="Center" />
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <Button x:Name="AddGlossaryBtn" Content="+ Ekle" Padding="8,3" Margin="0,0,6,0" Background="#1E293B" Foreground="#4ADE80" BorderBrush="#334155" BorderThickness="1" Click="AddGlossaryRow_Click" />
+                                            <Button x:Name="RemoveGlossaryBtn" Content="Sil" Padding="8,3" Background="#7F1D1D" Foreground="White" BorderThickness="0" Click="RemoveGlossaryRow_Click" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <DataGrid x:Name="GlossaryGrid"
+                                              Height="165"
+                                              AutoGenerateColumns="False"
+                                              CanUserAddRows="False"
+                                              Background="#0B0F19"
+                                              Foreground="#E2E8F0"
+                                              RowBackground="#111827"
+                                              AlternatingRowBackground="#1E293B"
+                                              GridLinesVisibility="Horizontal"
+                                              HeadersVisibility="Column"
+                                              BorderBrush="#334155"
+                                              CellEditEnding="ProfileGrid_CellEditEnding">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn x:Name="ColGlossarySrc" Header="Kaynak Terim" Binding="{Binding Source, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                                            <DataGridTextColumn x:Name="ColGlossaryTgt" Header="Türkçe / Hedef" Binding="{Binding Target, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <Expander x:Name="ProfilePreviewExpander"
+                                  Header="Hy-MT2 Prompt Bağlam Önizlemesi ([Background Information])"
+                                  Foreground="#F8FAFC"
+                                  FontWeight="SemiBold"
+                                  Background="#0F172A"
+                                  BorderBrush="#1E293B"
+                                  BorderThickness="1"
+                                  Padding="10">
+                            <TextBox x:Name="ProfilePromptPreviewBox"
+                                     IsReadOnly="True"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     MinHeight="90"
+                                     Margin="0,8,0,0"
+                                     Padding="8"
+                                     FontFamily="Consolas"
+                                     FontSize="12"
+                                     Background="#0B0F19"
+                                     Foreground="#CBD5E1"
+                                     BorderBrush="#334155" />
+                        </Expander>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- SEKME 3: GÖRÜNÜM (STİL SİSTEMİ) -->
             <TabItem x:Name="MainTabStyle" Header="Görünüm">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
@@ -778,7 +972,7 @@
                             </StackPanel>
                         </Border>
 
-                        <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="16">
+                        <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,12">
                             <StackPanel>
                                 <TextBlock x:Name="ObsChromaHeaderText" Text="Yedek Yöntem: OBS Penceresi (Pencere Yakalama + Chroma Key)" FontSize="14" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,8" />
                                 <CheckBox x:Name="ShowChromaWindowCheck" Content="Düz renkli OBS Chroma Key penceresini aç" Checked="ObsOption_Changed" Unchecked="ObsOption_Changed" Margin="0,0,0,10" />
@@ -786,6 +980,18 @@
                                     <TextBlock x:Name="ObsChromaColorLabelText" Text="Chroma Arka Plan Rengi:" Foreground="#CBD5E1" VerticalAlignment="Center" Margin="0,0,10,0" />
                                     <controls:ColorFieldControl x:Name="ChromaColorPicker" ColorChanged="ChromaColor_Changed" />
                                 </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="8" Padding="16">
+                            <StackPanel>
+                                <TextBlock x:Name="ObsDropFreeHeaderText" Text="RTX 3080 10 GB / Dropsuz 1080p Yayın Kontrol Listesi" FontSize="14" FontWeight="Bold" Foreground="#4ADE80" Margin="0,0,0,8" />
+                                <TextBlock x:Name="ObsDropFreeChecklistText"
+                                           Text="1. OBS Studio'yu Yönetici Olarak çalıştırın (OBS'in GPU zamanlama önceliğini artırır).&#x0a;2. OBS Çıkış → Kodlayıcı: NVIDIA NVENC (Preset P5), 'Look-ahead' ve 'Psycho Visual Tuning' KAPALI (CUDA çekirdeklerini LLM'e bırakır).&#x0a;3. NVIDIA Denetim Masası → 3D Ayarları → Program Ayarları → llama-server.exe → 'CUDA - Sysmem Fallback Policy: Prefer No Sysmem Fallback'.&#x0a;4. Yayına başlamadan önce bitiq'te 'Başlat'a basıp Hy-MT2 7B Q6_K modelini VRAM'e ön-yükleyin (yayın ortasında model değiştirmeyin)."
+                                           Foreground="#CBD5E1"
+                                           FontSize="12.5"
+                                           LineHeight="20"
+                                           TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -800,12 +1006,16 @@
                             <StackPanel>
                                 <TextBlock x:Name="AdvLocalHeaderText" Text="Yerel Model ve Gecikme Ayarları" FontSize="14" FontWeight="Bold" Foreground="#38BDF8" Margin="0,0,0,10" />
                                 <WrapPanel>
+                                    <StackPanel Width="250" Margin="0,0,16,10">
+                                        <TextBlock x:Name="AdvModelLabelText" Text="Yerel Çeviri Modeli" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <ComboBox x:Name="LocalModelCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
+                                            <ComboBoxItem Content="Hy-MT2 7B (Q6_K — Bağlamlı, Önerilen)" Tag="HyMt2_7B" />
+                                            <ComboBoxItem Content="TranslateGemma 4B (Hızlı / Bağlamsız)" Tag="TranslateGemma4B" />
+                                        </ComboBox>
+                                    </StackPanel>
                                     <StackPanel Width="240" Margin="0,0,16,10">
                                         <TextBlock x:Name="AdvQuantLabelText" Text="Model Niceleme (Kalite ↔ Hız)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
-                                        <ComboBox x:Name="QuantSelectionCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
-                                            <ComboBoxItem Content="Q8_0 (~3.85 GB — Yüksek Kalite, Varsayılan)" Tag="Q8_0" />
-                                            <ComboBoxItem Content="Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)" Tag="Q4_K_M" />
-                                        </ComboBox>
+                                        <ComboBox x:Name="QuantSelectionCombo" Height="30" SelectionChanged="AdvancedSetting_Changed" />
                                     </StackPanel>
                                     <StackPanel Width="200" Margin="0,0,16,10">
                                         <TextBlock x:Name="AdvBackendLabelText" Text="GPU / Arka Uç" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
@@ -839,6 +1049,24 @@
                                             <ComboBoxItem Content="4 Thread" Tag="4" />
                                         </ComboBox>
                                     </StackPanel>
+                                    <StackPanel Width="185" Margin="0,0,16,10">
+                                        <TextBlock x:Name="AdvContextLinesLabelText" Text="Bağlam Geçmişi (Replik)" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <ComboBox x:Name="ContextMaxLinesCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
+                                            <ComboBoxItem Content="4 Replik (Hafif)" Tag="4" />
+                                            <ComboBoxItem Content="6 Replik" Tag="6" />
+                                            <ComboBoxItem Content="8 Replik (Önerilen)" Tag="8" />
+                                            <ComboBoxItem Content="12 Replik (Uzun)" Tag="12" />
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <StackPanel Width="185" Margin="0,0,16,10">
+                                        <TextBlock x:Name="AdvContextIdleLabelText" Text="Bağlam Boşta Sıfırlama" FontSize="12" Foreground="#94A3B8" Margin="0,0,0,4" />
+                                        <ComboBox x:Name="ContextIdleResetCombo" Height="30" SelectionChanged="AdvancedSetting_Changed">
+                                            <ComboBoxItem Content="45 sn" Tag="45" />
+                                            <ComboBoxItem Content="90 sn (Önerilen)" Tag="90" />
+                                            <ComboBoxItem Content="180 sn" Tag="180" />
+                                            <ComboBoxItem Content="300 sn" Tag="300" />
+                                        </ComboBox>
+                                    </StackPanel>
                                 </WrapPanel>
 
                                 <WrapPanel Margin="0,6,0,0">
@@ -854,6 +1082,36 @@
                                     <CheckBox x:Name="PreprocessCheck" Content="Akıllı Arka Plan Temizleme (Arka plansız altyazılar için önerilen)" VerticalAlignment="Center" Margin="0,4,18,4" Checked="AdvancedCheck_Changed" Unchecked="AdvancedCheck_Changed" />
                                     <CheckBox x:Name="MergeIncompleteAdvCheck" Content="Bitmemiş cümleleri birleştirerek çevir" VerticalAlignment="Center" Margin="0,4,0,4" Checked="MergeIncompleteCheck_Changed" Unchecked="MergeIncompleteCheck_Changed" />
                                 </WrapPanel>
+
+                                <Border Background="#111C31" BorderBrush="#1E293B" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,6,0,4">
+                                    <StackPanel>
+                                        <CheckBox x:Name="SimulateVramCheck"
+                                                  Content="VRAM Simüle Et (Farklı ekran kartı limitini test et)"
+                                                  Foreground="#E2E8F0"
+                                                  Checked="SimulateVramCheck_Changed"
+                                                  Unchecked="SimulateVramCheck_Changed" />
+                                        <StackPanel x:Name="SimulateVramPanel" Margin="22,6,0,0" Visibility="Collapsed">
+                                            <TextBlock x:Name="SimulateVramLabel"
+                                                       Text="Simüle Edilen Kart VRAM Limiti: 10 GB (10240 MB)"
+                                                       FontSize="12"
+                                                       Foreground="#94A3B8" />
+                                            <Slider x:Name="SimulateVramSlider"
+                                                    Width="280"
+                                                    HorizontalAlignment="Left"
+                                                    Minimum="6"
+                                                    Maximum="16"
+                                                    TickFrequency="0.5"
+                                                    IsSnapToTickEnabled="True"
+                                                    Margin="0,2,0,4"
+                                                    ValueChanged="SimulateVramSlider_Changed" />
+                                            <TextBlock x:Name="SimulateVramPreviewText"
+                                                       Text=""
+                                                       FontSize="11.5"
+                                                       Foreground="#38BDF8"
+                                                       TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
 
                                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                     <Button x:Name="OpenWizardBtn" Content="Kurulum Sihirbazını Aç" Padding="12,6" Margin="0,0,8,0" Background="#1E293B" Foreground="#E2E8F0" BorderBrush="#334155" BorderThickness="1" Click="OpenWizard_Click" />
@@ -889,15 +1147,17 @@
                                           HeadersVisibility="Column"
                                           BorderBrush="#334155">
                                     <DataGrid.Columns>
-                                        <DataGridTextColumn x:Name="ColDiagEngine" Header="Motor" Binding="{Binding Engine}" Width="120" />
+                                        <DataGridTextColumn x:Name="ColDiagEngine" Header="Motor" Binding="{Binding Engine}" Width="110" />
                                         <DataGridTextColumn x:Name="ColDiagSource" Header="Kaynak" Binding="{Binding SourceTextPreview}" Width="*" />
-                                        <DataGridCheckBoxColumn x:Name="ColDiagCache" Header="Önbellek" Binding="{Binding CacheHit}" Width="65" />
-                                        <DataGridTextColumn x:Name="ColDiagCapture" Header="Yakalama (ms)" Binding="{Binding CaptureMs}" Width="90" />
-                                        <DataGridTextColumn x:Name="ColDiagOcr" Header="OCR (ms)" Binding="{Binding OcrMs}" Width="75" />
-                                        <DataGridTextColumn x:Name="ColDiagFirstToken" Header="1. Token (ms)" Binding="{Binding FirstTokenMs}" Width="90" />
-                                        <DataGridTextColumn x:Name="ColDiagTranslate" Header="Çeviri (ms)" Binding="{Binding TotalTranslateMs}" Width="85" />
-                                        <DataGridTextColumn x:Name="ColDiagRender" Header="Gösterim (ms)" Binding="{Binding RenderMs}" Width="90" />
-                                        <DataGridTextColumn x:Name="ColDiagTotal" Header="Toplam (ms)" Binding="{Binding TotalEndToEndMs}" Width="90" />
+                                        <DataGridCheckBoxColumn x:Name="ColDiagCache" Header="Önbellek" Binding="{Binding CacheHit}" Width="58" />
+                                        <DataGridTextColumn x:Name="ColDiagCapture" Header="Yakalama (ms)" Binding="{Binding CaptureMs}" Width="78" />
+                                        <DataGridTextColumn x:Name="ColDiagOcr" Header="OCR (ms)" Binding="{Binding OcrMs}" Width="66" />
+                                        <DataGridTextColumn x:Name="ColDiagFirstToken" Header="1. Token (ms)" Binding="{Binding FirstTokenMs}" Width="78" />
+                                        <DataGridTextColumn x:Name="ColDiagTranslate" Header="Çeviri (ms)" Binding="{Binding TotalTranslateMs}" Width="74" />
+                                        <DataGridTextColumn x:Name="ColDiagCachedTok" Header="KV İsabet" Binding="{Binding CachedTokens}" Width="66" />
+                                        <DataGridTextColumn x:Name="ColDiagTokSec" Header="tok/s" Binding="{Binding TokensPerSecond}" Width="56" />
+                                        <DataGridTextColumn x:Name="ColDiagRender" Header="Gösterim (ms)" Binding="{Binding RenderMs}" Width="78" />
+                                        <DataGridTextColumn x:Name="ColDiagTotal" Header="Toplam (ms)" Binding="{Binding TotalEndToEndMs}" Width="78" />
                                     </DataGrid.Columns>
                                 </DataGrid>
                             </StackPanel>
@@ -957,6 +1217,7 @@
                                     <ProgressBar x:Name="PerfGpuBar" Height="8" Minimum="0" Maximum="100" Value="0" Foreground="#C084FC" Background="#1E293B" Margin="0,0,0,10" />
                                     <TextBlock x:Name="PerfGpuNameText" Text="GPU: Kontrol ediliyor…" FontSize="12" Foreground="#CBD5E1" Margin="0,0,0,3" TextWrapping="Wrap" />
                                     <TextBlock x:Name="PerfVramDetailText" Text="VRAM: —" FontSize="12" Foreground="#94A3B8" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="PerfVramSafetyText" Text="" FontSize="11.5" Foreground="#4ADE80" Margin="0,4,0,0" TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
                         </Grid>

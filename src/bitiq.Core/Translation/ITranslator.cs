@@ -13,7 +13,10 @@ public sealed record TranslationResult(
     double TotalMs,
     bool FromCache,
     bool WasCancelled = false,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    int PromptTokens = 0,
+    int CachedTokens = 0,
+    double TokensPerSecond = 0);
 
 public interface ITranslator : IDisposable
 {
@@ -28,5 +31,6 @@ public interface ITranslator : IDisposable
         string targetLang,
         bool stream,
         Action<TranslationProgress>? onProgress,
-        CancellationToken ct);
+        CancellationToken ct,
+        TranslationContextSnapshot? context = null);
 }

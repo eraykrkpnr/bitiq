@@ -70,7 +70,8 @@ public sealed class GoogleGtxTranslator : ITranslator
         string targetLang,
         bool stream,
         Action<TranslationProgress>? onProgress,
-        CancellationToken ct)
+        CancellationToken ct,
+        TranslationContextSnapshot? context = null)
     {
         if (string.IsNullOrWhiteSpace(text))
             return new TranslationResult(string.Empty, 0, 0, false);

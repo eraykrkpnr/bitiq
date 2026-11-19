@@ -226,6 +226,48 @@ public sealed class RstOcrEnhancementsTests(ITestOutputHelper output)
         Assert.Contains("HELLO", enqueuedResult, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void SubtitleStabilizer_And_OcrBlockGrouper_FilterBackgroundUppercaseNoiseWithoutHurtingDialogue()
+    {
+        bool previousEnglishMode = SubtitleStabilizer.IsEnglishSourceMode;
+        SubtitleStabilizer.IsEnglishSourceMode = true;
+        try
+        {
+            // Kullanıcının gerçek OneOCR loglarından bildirilen tüm arka plan gürültü vakaları
+            Assert.Equal("Yeah? Damn.\nWhat else is new?", SubtitleStabilizer.CleanRawText("INMA Yeah? Damn.\nWhat else is new?"));
+            Assert.Equal("They're late.\nYeah? Damn.", SubtitleStabilizer.CleanRawText("INM\nThey're late.\nYeah? Damn."));
+            Assert.Equal("You can look out there all day, girl.", SubtitleStabilizer.CleanRawText("ATE ATE\nYou can look out there all day, girl."));
+            Assert.Equal(string.Empty, SubtitleStabilizer.CleanRawText("ATE"));
+            Assert.Equal("I don't like to do this, but my boss told me …", SubtitleStabilizer.CleanRawText("SA I don't like to do this, but my boss told me …"));
+            Assert.Equal(string.Empty, SubtitleStabilizer.CleanRawText("SA"));
+            Assert.Equal("Just water.", SubtitleStabilizer.CleanRawText("SA Just water."));
+
+            // Geçerli diyaloglar ve bilinen kısa kelimeler/nida ifadeleri korunmalı
+            Assert.Equal("HELLO WORLD", SubtitleStabilizer.CleanRawText("HELLO WORLD"));
+            Assert.Equal("I don't know.", SubtitleStabilizer.CleanRawText("I don't know."));
+            Assert.Equal("OK Let's go.", SubtitleStabilizer.CleanRawText("OK Let's go."));
+            Assert.Equal("STOP! Don't move!", SubtitleStabilizer.CleanRawText("STOP! Don't move!"));
+
+            // Uzaysal olarak ayrı arka plan tabelası ('ATE') + altyazı bloğu birleştiğinde gürültü bloğu atılmalı
+            var words = new List<OcrWordElement>
+            {
+                new("ATE", new OcrBoundingBox(40, 20, 48, 22), Confidence: 0.88),
+                new("You", new OcrBoundingBox(320, 180, 40, 24), Confidence: 0.96),
+                new("can", new OcrBoundingBox(366, 180, 38, 24), Confidence: 0.96),
+                new("look", new OcrBoundingBox(410, 180, 46, 24), Confidence: 0.96),
+                new("out.", new OcrBoundingBox(462, 180, 42, 24), Confidence: 0.96),
+            };
+            string formatted = OcrBlockGrouper.GroupAndFormat(
+                words,
+                new OcrGroupingOptions(MinWordConfidence: 0.45, SourceLanguageCode: "en"));
+            Assert.Equal("You can look out.", formatted);
+        }
+        finally
+        {
+            SubtitleStabilizer.IsEnglishSourceMode = previousEnglishMode;
+        }
+    }
+
     private static byte[] RenderSyntheticTextBgra(string text, int width, int height)
     {
         byte[] buf = new byte[width * height * 4];

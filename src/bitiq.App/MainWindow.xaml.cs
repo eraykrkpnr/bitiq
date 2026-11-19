@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -20,6 +21,7 @@ namespace Bitiq.App;
 public partial class MainWindow : Window
 {
     private readonly SettingsService _settingsService = new();
+    private readonly GameProfileService _gameProfileService;
     private readonly DiagnosticsTracker _diagnostics = new(50);
     private readonly TranslationLruCache _translationCache = new(500);
 
@@ -34,10 +36,15 @@ public partial class MainWindow : Window
 
     private readonly SubtitleOverlayWindow _overlayWindow = new();
     private readonly PerformanceMonitorService _perfMonitor = new();
+    private readonly ObservableCollection<CharacterEntry> _editingCharacters = [];
+    private readonly ObservableCollection<GlossaryEntry> _editingGlossary = [];
     private ObsChromaWindow? _chromaWindow;
     private TestSubtitleWindow? _testWindow;
 
     private AppSettings _settings;
+    private List<GameProfile> _gameProfiles = [];
+    private GameProfile? _editingProfile;
+    private volatile GameProfile? _cachedActiveProfile;
     private List<string> _allFontNames = [];
     private int _uiSuppressCount = 1;
     private bool _isStartingOrSwitching;
@@ -70,7 +77,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         _settings = _settingsService.Load();
+        _gameProfileService = new GameProfileService(_settingsService);
         InitializeComponent();
+
+        CharactersGrid.ItemsSource = _editingCharacters;
+        GlossaryGrid.ItemsSource = _editingGlossary;
 
         _ocrService = new WindowsOcrService(
             _settings.OcrPreprocessEnabled,
@@ -83,10 +94,14 @@ public partial class MainWindow : Window
         _llamaTranslator = new LlamaCppTranslator(
             _llamaManager,
             _translationCache,
+            () => _settings.LocalModel,
             () => _settings.LocalModelQuantization,
             () => _settings.LocalBackend,
             () => _settings.LlamaPort,
-            () => _settings.LlamaThreads);
+            () => _settings.LlamaThreads,
+            GetActiveGameProfile,
+            () => _settings.SimulateVramLimitEnabled,
+            () => _settings.SimulatedVramLimitGb);
 
         _obsServer = new ObsHttpServer(_settings.ActiveStyle);
         _pipeline = new SubtitlePipeline(
@@ -94,12 +109,15 @@ public partial class MainWindow : Window
             _ocrService,
             _diagnostics,
             GetActiveTranslator,
-            () => _settings);
+            () => _settings,
+            GetActiveGameProfile);
 
         WireEvents();
         Loaded += OnMainLoaded;
         Closing += OnMainClosing;
     }
+
+    private GameProfile? GetActiveGameProfile() => _cachedActiveProfile;
 
     private ITranslator GetActiveTranslator() =>
         _settings.TranslationEngine == TranslationEngineKind.Local ? _llamaTranslator : _googleTranslator;
@@ -108,6 +126,7 @@ public partial class MainWindow : Window
     {
         _pipeline.SubtitleUpdated += evt => Dispatcher.BeginInvoke(() => OnSubtitleUpdated(evt));
         _pipeline.StateChanged += (state, msg) => Dispatcher.BeginInvoke(() => UpdateStatusDisplay(state, msg));
+        _pipeline.ContextLineCountChanged += count => Dispatcher.BeginInvoke(() => UpdateContextMemoryBadge(count));
         _diagnostics.RecordAdded += _ => Dispatcher.BeginInvoke(RefreshDiagnosticsUi);
 
         _llamaManager.DownloadProgress += info => Dispatcher.BeginInvoke(() =>
@@ -166,6 +185,7 @@ public partial class MainWindow : Window
             }
 
             PopulateFontList();
+            ReloadGameProfiles();
             LoadSettingsIntoUi();
             CheckEnvironmentWarnings();
             ApplyUiLanguage();
@@ -231,6 +251,53 @@ public partial class MainWindow : Window
         {
             DriverWarningBanner.Visibility = Visibility.Collapsed;
         }
+
+        UpdateVramWarningBanner();
+    }
+
+    private void UpdateVramWarningBanner()
+    {
+        if (!string.IsNullOrWhiteSpace(_llamaManager.LastVramWarning))
+        {
+            VramWarningBanner.Visibility = Visibility.Visible;
+            VramWarningText.Text = $"⚠ {_llamaManager.LastVramWarning}";
+            return;
+        }
+
+        if (_settings.TranslationEngine == TranslationEngineKind.Local
+            && _settings.LocalModel == LocalModelKind.HyMt2_7B
+            && _settings.LocalBackend != LocalBackendKind.Cpu)
+        {
+            var vram = PerformanceMonitorService.QueryEffectiveVramBudget(
+                _settings.SimulateVramLimitEnabled,
+                _settings.SimulatedVramLimitGb);
+            if (vram.Available)
+            {
+                if (vram.TotalMb < 7500)
+                {
+                    VramWarningBanner.Visibility = Visibility.Visible;
+                    VramWarningText.Text = IsEnglishUi
+                        ? $"⚠ Your GPU has {vram.TotalMb / 1024.0:F1} GB VRAM. Hy-MT2 7B (Q6_K) needs ~6.6 GB free VRAM; TranslateGemma 4B is recommended to avoid OBS drops."
+                        : $"⚠ Ekran kartınız {vram.TotalMb / 1024.0:F1} GB VRAM'e sahip. Hy-MT2 7B (Q6_K) ~6.6 GB boş VRAM gerektirir; OBS drop olmaması için TranslateGemma 4B önerilir.";
+                    return;
+                }
+
+                if (!_llamaManager.IsRunning && vram.FreeMb < 2800)
+                {
+                    var previewPlan = LlamaServerManager.ComputeGpuOffloadPlan(
+                        _settings.LocalModel,
+                        _settings.LocalModelQuantization,
+                        vram);
+                    VramWarningBanner.Visibility = Visibility.Visible;
+                    VramWarningText.Text = IsEnglishUi
+                        ? $"⚠ Very low free VRAM ({vram.FreeMb:0} / {vram.TotalMb:0} MB). Startup will shift layers to RAM ({previewPlan.Summary}); close heavy GPU apps for faster translation."
+                        : $"⚠ Boş VRAM çok düşük ({vram.FreeMb:0} / {vram.TotalMb:0} MB). Başlatıldığında katmanların çoğu RAM'e kaydırılacak ({previewPlan.Summary}); daha hızlı çeviri için gereksiz GPU uygulamalarını kapatın.";
+                    return;
+                }
+            }
+        }
+
+        VramWarningBanner.Visibility = Visibility.Collapsed;
     }
 
     private void PopulateFontList(string filter = "")
@@ -310,11 +377,17 @@ public partial class MainWindow : Window
             ChromaColorPicker.ColorHex = _settings.ObsChromaColorHex;
             SyncScreenOverlayControls(_settings.ShowScreenOverlay);
 
-            SelectComboTag(QuantSelectionCombo, _settings.LocalModelQuantization.ToString());
+            SelectComboTag(LocalModelCombo, _settings.LocalModel.ToString());
+            PopulateQuantComboForCurrentModel();
             SelectComboTag(BackendCombo, _settings.LocalBackend.ToString());
             SelectComboTag(StabilityFramesCombo, _settings.StabilityFrames.ToString());
             SelectComboTag(OcrEngineCombo, _settings.OcrEngine.ToString());
             SelectComboTag(ThreadsCombo, _settings.LlamaThreads.ToString());
+            SelectComboTag(ContextMaxLinesCombo, _settings.ContextMaxLines.ToString());
+            SelectComboTag(ContextIdleResetCombo, _settings.ContextIdleResetSeconds.ToString());
+            ContextEnabledCheck.IsChecked = _settings.ContextEnabled;
+            UpdateContextMemoryBadge(_pipeline.ContextLineCount);
+            UpdateContextControlsState();
             DebounceSlider.Value = _settings.TypewriterDebounceMs;
             OcrConfidenceSlider.Value = Math.Clamp(Math.Round(_settings.OcrMinConfidence * 100.0), 0, 90);
             UpdateDebounceLabel();
@@ -324,6 +397,9 @@ public partial class MainWindow : Window
             PreprocessCheck.IsChecked = _settings.OcrPreprocessEnabled;
             MergeIncompleteCheck.IsChecked = _settings.MergeIncompleteSentencesEnabled;
             MergeIncompleteAdvCheck.IsChecked = _settings.MergeIncompleteSentencesEnabled;
+            SimulateVramCheck.IsChecked = _settings.SimulateVramLimitEnabled;
+            SimulateVramSlider.Value = Math.Clamp(_settings.SimulatedVramLimitGb, 6.0, 16.0);
+            UpdateSimulateVramUi();
         }
         finally
         {
@@ -535,6 +611,46 @@ public partial class MainWindow : Window
             : Visibility.Collapsed;
     }
 
+    private void UpdateSimulateVramUi()
+    {
+        double limitGb = Math.Clamp(_settings.SimulatedVramLimitGb, 6.0, 16.0);
+        SimulateVramLabel.Text = IsEnglishUi
+            ? $"Simulated GPU VRAM Limit: {limitGb:0.#} GB ({limitGb * 1024:0} MB)"
+            : $"Simüle Edilen Kart VRAM Limiti: {limitGb:0.#} GB ({limitGb * 1024:0} MB)";
+        SimulateVramPanel.Visibility = _settings.SimulateVramLimitEnabled
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        if (!_settings.SimulateVramLimitEnabled)
+        {
+            SimulateVramPreviewText.Text = string.Empty;
+            return;
+        }
+
+        if (_llamaManager.IsRunning && _llamaManager.ActiveGpuOffloadPlan is { } activePlan)
+        {
+            var effectiveDuringRun = PerformanceMonitorService.QueryEffectiveVramBudget(true, limitGb);
+            SimulateVramPreviewText.Text = IsEnglishUi
+                ? $"Active running plan: {activePlan.Summary} • Stop & Start to re-measure VRAM and apply {limitGb:0.#} GB cap ({effectiveDuringRun.UsedMb:0}/{effectiveDuringRun.TotalMb:0} MB incl. active model)."
+                : $"Şu an çalışan plan: {activePlan.Summary} • {limitGb:0.#} GB sınırını temiz bellekle uygulamak için Durdurup tekrar Başlatın (aktif model dahil {effectiveDuringRun.UsedMb:0}/{effectiveDuringRun.TotalMb:0} MB).";
+            return;
+        }
+
+        var vram = PerformanceMonitorService.QueryEffectiveVramBudget(true, limitGb);
+        if (!vram.Available)
+        {
+            SimulateVramPreviewText.Text = IsEnglishUi
+                ? "NVIDIA NVML not detected — simulation requires an NVIDIA GPU."
+                : "NVIDIA NVML algılanmadı — simülasyon NVIDIA GPU gerektirir.";
+            return;
+        }
+
+        var preview = LlamaServerManager.ComputeGpuOffloadPlan(_settings.LocalModel, _settings.LocalModelQuantization, vram);
+        SimulateVramPreviewText.Text = IsEnglishUi
+            ? $"Simulated available headroom: {vram.FreeMb:0} MB free ({vram.UsedMb:0}/{vram.TotalMb:0} MB used) → Estimated placement: {preview.Summary}"
+            : $"Simüle boş bütçe: {vram.FreeMb:0} MB boş ({vram.UsedMb:0}/{vram.TotalMb:0} MB dolu) → Tahmini yerleşim: {preview.Summary}";
+    }
+
     private void BroadcastStyleLive()
     {
         StylePreviewPresenter.SetStyle(_settings.ActiveStyle);
@@ -629,9 +745,11 @@ public partial class MainWindow : Window
         try
         {
             await _pipeline.StartAsync();
+            UpdateVramWarningBanner();
         }
         catch (Exception ex)
         {
+            UpdateVramWarningBanner();
             UpdateStatusDisplay(PipelineState.Error, ex.Message);
             MessageBox.Show(ex.Message, "Başlatılamadı", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
@@ -681,6 +799,9 @@ public partial class MainWindow : Window
         {
             OffloadStatusText.Text = string.Empty;
         }
+
+        UpdateVramWarningBanner();
+        UpdateSimulateVramUi();
 
         if (wasRunning && _settings.CaptureRegion is { IsValid: true })
         {
@@ -1234,9 +1355,21 @@ public partial class MainWindow : Window
             return;
 
         var previousOcrEngine = _settings.OcrEngine;
+        var previousModel = _settings.LocalModel;
 
-        if (Enum.TryParse<ModelQuantization>(GetComboTag(QuantSelectionCombo), out var q))
-            _settings.LocalModelQuantization = q;
+        if (Enum.TryParse<LocalModelKind>(GetComboTag(LocalModelCombo), out var model))
+            _settings.LocalModel = model;
+
+        if (_settings.LocalModel != previousModel)
+        {
+            _settings.LocalModelQuantization = ModelCatalog.ResolveQuantization(_settings.LocalModel, _settings.LocalModelQuantization);
+            PopulateQuantComboForCurrentModel();
+        }
+        else if (Enum.TryParse<ModelQuantization>(GetComboTag(QuantSelectionCombo), out var q))
+        {
+            _settings.LocalModelQuantization = ModelCatalog.ResolveQuantization(_settings.LocalModel, q);
+        }
+
         if (Enum.TryParse<LocalBackendKind>(GetComboTag(BackendCombo), out var b))
             _settings.LocalBackend = b;
         if (int.TryParse(GetComboTag(StabilityFramesCombo), out int sf))
@@ -1245,6 +1378,13 @@ public partial class MainWindow : Window
             _settings.OcrEngine = ocrEngine;
         if (int.TryParse(GetComboTag(ThreadsCombo), out int th))
             _settings.LlamaThreads = th;
+        if (int.TryParse(GetComboTag(ContextMaxLinesCombo), out int ctxLines))
+        {
+            _settings.ContextMaxLines = Math.Clamp(ctxLines, 4, 12);
+            _settings.ContextTrimToLines = Math.Max(2, _settings.ContextMaxLines / 2);
+        }
+        if (int.TryParse(GetComboTag(ContextIdleResetCombo), out int ctxIdle))
+            _settings.ContextIdleResetSeconds = Math.Clamp(ctxIdle, 15, 600);
 
         _settingsService.Save(_settings);
 
@@ -1256,7 +1396,74 @@ public partial class MainWindow : Window
             CheckEnvironmentWarnings();
         }
 
+        if (_settings.LocalModel != previousModel)
+        {
+            UpdateLocalEngineCardLabels();
+            UpdateContextControlsState();
+            UpdateContextMemoryBadge(_pipeline.ContextLineCount);
+            if (_pipeline.State == PipelineState.Running)
+            {
+                StatusDetailText.Text = IsEnglishUi
+                    ? "Model changed — stop and start again to load the selected model."
+                    : "Model değiştirildi — yeni modelin yüklenmesi için Durdurup tekrar Başlatın.";
+            }
+        }
+
+        UpdateVramWarningBanner();
+        UpdateSimulateVramUi();
         _pipeline.ApplyLiveSettings(_settings);
+    }
+
+    private void PopulateQuantComboForCurrentModel()
+    {
+        bool en = IsEnglishUi;
+        _uiSuppressCount++;
+        try
+        {
+            QuantSelectionCombo.Items.Clear();
+            if (_settings.LocalModel == LocalModelKind.HyMt2_7B)
+            {
+                _settings.LocalModelQuantization = ModelQuantization.Q6_K;
+                QuantSelectionCombo.Items.Add(new ComboBoxItem
+                {
+                    Tag = "Q6_K",
+                    Content = en
+                        ? "Q6_K (~5.74 GB — Optimized for 10 GB RTX 3080)"
+                        : "Q6_K (~5.74 GB — 10 GB RTX 3080 için Optimize)",
+                    IsSelected = true
+                });
+                QuantSelectionCombo.SelectedIndex = 0;
+                QuantSelectionCombo.IsEnabled = false;
+            }
+            else
+            {
+                _settings.LocalModelQuantization = ModelCatalog.ResolveQuantization(
+                    LocalModelKind.TranslateGemma4B,
+                    _settings.LocalModelQuantization);
+                var q8 = new ComboBoxItem
+                {
+                    Tag = "Q8_0",
+                    Content = en
+                        ? "Q8_0 (~3.85 GB — High Quality)"
+                        : "Q8_0 (~3.85 GB — Yüksek Kalite)"
+                };
+                var q4 = new ComboBoxItem
+                {
+                    Tag = "Q4_K_M",
+                    Content = en
+                        ? "Q4_K_M (~2.32 GB — Faster & Lighter)"
+                        : "Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)"
+                };
+                QuantSelectionCombo.Items.Add(q8);
+                QuantSelectionCombo.Items.Add(q4);
+                QuantSelectionCombo.SelectedItem = _settings.LocalModelQuantization == ModelQuantization.Q4_K_M ? q4 : q8;
+                QuantSelectionCombo.IsEnabled = true;
+            }
+        }
+        finally
+        {
+            _uiSuppressCount--;
+        }
     }
 
     private void AdvancedSlider_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -1280,6 +1487,35 @@ public partial class MainWindow : Window
         _settings.OcrPreprocessEnabled = PreprocessCheck.IsChecked == true;
         _settingsService.Save(_settings);
         _pipeline.ApplyLiveSettings(_settings);
+    }
+
+    private void SimulateVramCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (IsUiSuppressed)
+            return;
+
+        _settings.SimulateVramLimitEnabled = SimulateVramCheck.IsChecked == true;
+        _settingsService.Save(_settings);
+        UpdateSimulateVramUi();
+        UpdateVramWarningBanner();
+
+        if (_pipeline.State == PipelineState.Running && _settings.TranslationEngine == TranslationEngineKind.Local)
+        {
+            StatusDetailText.Text = IsEnglishUi
+                ? "VRAM simulation changed — stop and start again to reload the model under the simulated cap."
+                : "VRAM simülasyonu değiştirildi — modelin yeni limitle yüklenmesi için Durdurup tekrar Başlatın.";
+        }
+    }
+
+    private void SimulateVramSlider_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (IsUiSuppressed)
+            return;
+
+        _settings.SimulatedVramLimitGb = Math.Clamp(Math.Round(SimulateVramSlider.Value * 2.0) / 2.0, 6.0, 16.0);
+        _settingsService.Save(_settings);
+        UpdateSimulateVramUi();
+        UpdateVramWarningBanner();
     }
 
     private void StreamingCheck_Changed(object sender, RoutedEventArgs e)
@@ -1360,34 +1596,49 @@ public partial class MainWindow : Window
     private void RefreshDiagnosticsUi()
     {
         var s = _diagnostics.GetSummary();
+        var records = _diagnostics.GetSnapshot();
         if (s.SampleCount == 0)
         {
             DiagnosticsSummaryText.Text = IsEnglishUi ? "No measurements yet." : "Henüz ölçüm yok.";
         }
-        else if (IsEnglishUi)
-        {
-            DiagnosticsSummaryText.Text =
-                $"Samples: {s.SampleCount}/50 (Cache Hits: {s.CacheHits}) | " +
-                $"Capture Avg/P95: {s.Capture.AverageMs}/{s.Capture.P95Ms} ms | " +
-                $"OCR: {s.Ocr.AverageMs}/{s.Ocr.P95Ms} ms | " +
-                $"1st Token: {s.FirstToken.AverageMs}/{s.FirstToken.P95Ms} ms | " +
-                $"Translate: {s.TotalTranslate.AverageMs}/{s.TotalTranslate.P95Ms} ms | " +
-                $"Render: {s.Render.AverageMs}/{s.Render.P95Ms} ms | " +
-                $"End-to-End: {s.EndToEnd.AverageMs}/{s.EndToEnd.P95Ms} ms";
-        }
         else
         {
-            DiagnosticsSummaryText.Text =
-                $"Örnek: {s.SampleCount}/50 (Önbellek: {s.CacheHits}) | " +
-                $"Yakalama Ort/P95: {s.Capture.AverageMs}/{s.Capture.P95Ms} ms | " +
-                $"OCR: {s.Ocr.AverageMs}/{s.Ocr.P95Ms} ms | " +
-                $"1.Token: {s.FirstToken.AverageMs}/{s.FirstToken.P95Ms} ms | " +
-                $"Çeviri: {s.TotalTranslate.AverageMs}/{s.TotalTranslate.P95Ms} ms | " +
-                $"Gösterim: {s.Render.AverageMs}/{s.Render.P95Ms} ms | " +
-                $"Uçtan Uca: {s.EndToEnd.AverageMs}/{s.EndToEnd.P95Ms} ms";
+            var localWithTimings = records.Where(r => !r.CacheHit && r.PromptTokens > 0).ToList();
+            string kvPart = string.Empty;
+            if (localWithTimings.Count > 0)
+            {
+                double avgCachedPct = localWithTimings.Average(r => Math.Min(100.0, r.CachedTokens * 100.0 / r.PromptTokens));
+                double avgTps = localWithTimings.Where(r => r.TokensPerSecond > 0).Select(r => r.TokensPerSecond).DefaultIfEmpty(0).Average();
+                kvPart = IsEnglishUi
+                    ? $" | KV Hit: {avgCachedPct:F0}% ({avgTps:F1} tok/s)"
+                    : $" | KV İsabet: %{avgCachedPct:F0} ({avgTps:F1} tok/s)";
+            }
+
+            if (IsEnglishUi)
+            {
+                DiagnosticsSummaryText.Text =
+                    $"Samples: {s.SampleCount}/50 (Cache Hits: {s.CacheHits}) | " +
+                    $"Capture Avg/P95: {s.Capture.AverageMs}/{s.Capture.P95Ms} ms | " +
+                    $"OCR: {s.Ocr.AverageMs}/{s.Ocr.P95Ms} ms | " +
+                    $"1st Token: {s.FirstToken.AverageMs}/{s.FirstToken.P95Ms} ms | " +
+                    $"Translate: {s.TotalTranslate.AverageMs}/{s.TotalTranslate.P95Ms} ms | " +
+                    $"Render: {s.Render.AverageMs}/{s.Render.P95Ms} ms | " +
+                    $"End-to-End: {s.EndToEnd.AverageMs}/{s.EndToEnd.P95Ms} ms{kvPart}";
+            }
+            else
+            {
+                DiagnosticsSummaryText.Text =
+                    $"Örnek: {s.SampleCount}/50 (Önbellek: {s.CacheHits}) | " +
+                    $"Yakalama Ort/P95: {s.Capture.AverageMs}/{s.Capture.P95Ms} ms | " +
+                    $"OCR: {s.Ocr.AverageMs}/{s.Ocr.P95Ms} ms | " +
+                    $"1.Token: {s.FirstToken.AverageMs}/{s.FirstToken.P95Ms} ms | " +
+                    $"Çeviri: {s.TotalTranslate.AverageMs}/{s.TotalTranslate.P95Ms} ms | " +
+                    $"Gösterim: {s.Render.AverageMs}/{s.Render.P95Ms} ms | " +
+                    $"Uçtan Uca: {s.EndToEnd.AverageMs}/{s.EndToEnd.P95Ms} ms{kvPart}";
+            }
         }
 
-        DiagnosticsGrid.ItemsSource = _diagnostics.GetSnapshot().Reverse().ToList();
+        DiagnosticsGrid.ItemsSource = records.Reverse().ToList();
     }
 
     private void ClearDiagnostics_Click(object sender, RoutedEventArgs e)
@@ -1473,13 +1724,23 @@ public partial class MainWindow : Window
                 ? $"{snap.GpuUtilizationPercent}% GPU"
                 : $"%{snap.GpuUtilizationPercent} GPU";
             PerfGpuBar.Value = Math.Clamp(snap.GpuUtilizationPercent, 0, 100);
-            PerfGpuNameText.Text = snap.GpuName;
+            var effectiveVram = PerformanceMonitorService.ApplySimulatedVramLimit(
+                new VramBudgetSnapshot(
+                    true,
+                    snap.GpuName,
+                    snap.TotalVramCapacityMb,
+                    snap.TotalVramUsedMb,
+                    Math.Max(0, snap.TotalVramCapacityMb - snap.TotalVramUsedMb)),
+                _settings.SimulateVramLimitEnabled,
+                _settings.SimulatedVramLimitGb);
+
+            PerfGpuNameText.Text = effectiveVram.GpuName;
 
             if (snap.HasPerProcessVram)
             {
                 PerfVramDetailText.Text = IsEnglishUi
-                    ? $"App + Model VRAM: {snap.AppAndLlamaVramMb:0} MB\nTotal GPU VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB"
-                    : $"Uygulama + Model VRAM: {snap.AppAndLlamaVramMb:0} MB\nToplam Kart VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB";
+                    ? $"App + Model VRAM: {snap.AppAndLlamaVramMb:0} MB\nTotal GPU VRAM: {effectiveVram.UsedMb:0} / {effectiveVram.TotalMb:0} MB"
+                    : $"Uygulama + Model VRAM: {snap.AppAndLlamaVramMb:0} MB\nToplam Kart VRAM: {effectiveVram.UsedMb:0} / {effectiveVram.TotalMb:0} MB";
             }
             else
             {
@@ -1487,8 +1748,25 @@ public partial class MainWindow : Window
                     ? (IsEnglishUi ? "Model active on GPU • " : "Model GPU'da aktif • ")
                     : string.Empty;
                 PerfVramDetailText.Text = IsEnglishUi
-                    ? $"{gpuTag}Total GPU VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB"
-                    : $"{gpuTag}Toplam Kart VRAM: {snap.TotalVramUsedMb:0} / {snap.TotalVramCapacityMb:0} MB";
+                    ? $"{gpuTag}Total GPU VRAM: {effectiveVram.UsedMb:0} / {effectiveVram.TotalMb:0} MB"
+                    : $"{gpuTag}Toplam Kart VRAM: {effectiveVram.UsedMb:0} / {effectiveVram.TotalMb:0} MB";
+            }
+
+            double remainingMb = Math.Max(0, effectiveVram.TotalMb - effectiveVram.UsedMb);
+            double usedRatio = effectiveVram.TotalMb > 0 ? effectiveVram.UsedMb / effectiveVram.TotalMb : 0;
+            if (remainingMb < 350.0)
+            {
+                PerfVramSafetyText.Foreground = BrushInfoWarn;
+                PerfVramSafetyText.Text = IsEnglishUi
+                    ? $"⚠ Low VRAM headroom ({remainingMb:0} MB left • {usedRatio * 100:0}% used) — shared-memory spillover can cause OBS lag"
+                    : $"⚠ Boş VRAM çok az ({remainingMb:0} MB kaldı • %{usedRatio * 100:0} kullanım) — paylaşılan belleğe taşma OBS drop yaratabilir";
+            }
+            else
+            {
+                PerfVramSafetyText.Foreground = BrushInfoOk;
+                PerfVramSafetyText.Text = IsEnglishUi
+                    ? $"✓ VRAM headroom safe ({remainingMb:0} MB free • {usedRatio * 100:0}% used, target ≥ 400 MB free)"
+                    : $"✓ VRAM bütçesi güvenli ({remainingMb:0} MB boş • %{usedRatio * 100:0} kullanım, hedef ≥ 400 MB boş)";
             }
         }
         else
@@ -1499,6 +1777,7 @@ public partial class MainWindow : Window
             PerfVramDetailText.Text = IsEnglishUi
                 ? "No NVIDIA NVML driver found; reporting CPU/RAM only."
                 : "AMD/Intel GPU veya NVML sürücüsü yok; yalnızca CPU/RAM okunuyor.";
+            PerfVramSafetyText.Text = string.Empty;
         }
 
         if (snap.IsLlamaRunning)
@@ -1506,9 +1785,12 @@ public partial class MainWindow : Window
             string backendLabel = string.IsNullOrWhiteSpace(snap.ActiveBackend)
                 ? (IsEnglishUi ? "unknown" : "bilinmiyor")
                 : snap.ActiveBackend;
+            string offloadTag = _llamaManager.ActiveGpuOffloadPlan is { } plan
+                ? $" • {plan.Summary}"
+                : string.Empty;
             PerfEngineStatusText.Text = IsEnglishUi
-                ? $"Status: Active (PID {snap.LlamaPid} • Backend: {backendLabel}) — {_llamaManager.LastStatusMessage}"
-                : $"Durum: Aktif (PID {snap.LlamaPid} • Arka uç: {backendLabel}) — {_llamaManager.LastStatusMessage}";
+                ? $"Status: Active (PID {snap.LlamaPid} • Backend: {backendLabel}{offloadTag}) — {_llamaManager.LastStatusMessage}"
+                : $"Durum: Aktif (PID {snap.LlamaPid} • Arka uç: {backendLabel}{offloadTag}) — {_llamaManager.LastStatusMessage}";
             UnloadLlamaBtn.IsEnabled = !_isStartingOrSwitching;
         }
         else
@@ -1542,6 +1824,7 @@ public partial class MainWindow : Window
         {
             _isStartingOrSwitching = false;
             RefreshPerformanceUi();
+            UpdateSimulateVramUi();
         }
     }
 
@@ -1716,6 +1999,7 @@ public partial class MainWindow : Window
         _settingsService.Save(_settings);
         _pipeline.ApplyLiveSettings(_settings);
         UpdateLanguagePairLabels();
+        UpdateProfilePromptPreview();
     }
 
     private void SwapLangsBtn_Click(object sender, RoutedEventArgs e)
@@ -1810,6 +2094,7 @@ public partial class MainWindow : Window
 
         // Sekme başlıkları
         MainTabGeneral.Header = en ? "General" : "Genel";
+        MainTabProfiles.Header = en ? "Game Profile" : "Oyun Profili";
         MainTabStyle.Header = en ? "Appearance" : "Görünüm";
         MainTabObs.Header = "OBS";
         MainTabAdvanced.Header = en ? "Advanced" : "Gelişmiş";
@@ -1837,14 +2122,49 @@ public partial class MainWindow : Window
 
         // Sekme 1: Genel
         EngineSelectorHeaderText.Text = en ? "Translation Engine Selection" : "Çeviri Motoru Seçimi";
-        EngineLocalTitleText.Text = en ? "Local (TranslateGemma): offline, pure translation" : "Yerel (TranslateGemma): internetsiz, daha doğal";
-        EngineLocalDescText.Text = en
-            ? "Runs on NVIDIA RTX GPU. Downloads llama.cpp and TranslateGemma 4B on first use."
-            : "RTX GPU üzerinde çalışır. İlk seferde llama.cpp ve TranslateGemma 4B indirilir.";
+        UpdateLocalEngineCardLabels();
         EngineGoogleTitleText.Text = en ? "Google Translate: lightweight & fast" : "Google Translate: hafif ve hızlı";
         EngineGoogleDescText.Text = en
             ? "Uses zero VRAM and minimal RAM. Unloads the local model immediately when selected."
             : "Ekran kartı ve bellek kullanmaz. Seçildiğinde yerel model VRAM/RAM'den tamamen boşaltılır.";
+
+        ContextCardHeaderText.Text = en ? "🧠 Context & Game Profile" : "🧠 Bağlam (Context) ve Oyun Profili";
+        ContextEnabledCheck.Content = en
+            ? "Enable context-aware translation (prior dialogue + game glossary, Hy-MT2 7B Q6_K)"
+            : "Bağlam duyarlı çeviriyi etkinleştir (önceki replikler + oyun sözlüğü, Hy-MT2 7B Q6_K)";
+        EditGameProfileBtn.Content = en ? "⚙ Edit Profile" : "⚙ Profili Düzenle";
+        ResetContextBtn.Content = en ? "🔄 Reset Context" : "🔄 Bağlamı Sıfırla";
+        UpdateContextMemoryBadge(_pipeline.ContextLineCount);
+        UpdateContextControlsState();
+
+        // Sekme 2: Oyun Profili
+        ProfileEditSelectLabelText.Text = en ? "Profile:" : "Profil:";
+        NewGameProfileBtn.Content = en ? "+ New" : "+ Yeni";
+        SaveGameProfileBtn.Content = en ? "Save" : "Kaydet";
+        DeleteGameProfileBtn.Content = en ? "Delete" : "Sil";
+        ExportGameProfileBtn.Content = en ? "Export JSON" : "JSON Dışa Aktar";
+        ImportGameProfileBtn.Content = en ? "Import JSON" : "JSON İçe Aktar";
+        ProfileMetaHeaderText.Text = en ? "Game Details & Tone" : "Oyun Bilgileri ve Üslup";
+        GameTitleLabelText.Text = en ? "Game Title" : "Oyun Adı";
+        GameSynopsisLabelText.Text = en ? "Short Synopsis / Genre (1-2 sentences)" : "Kısa Özet / Tür (1-2 cümle)";
+        GameToneLabelText.Text = en
+            ? "Tone & Register Note (e.g. 'Natural spoken Turkish; close friends use informal address')"
+            : "Üslup ve Hitap Notu (ör. 'Doğal konuşma dili; yakın arkadaşlar sen diye hitap eder')";
+        CharactersHeaderText.Text = en ? "Characters (Name / Gender-Role)" : "Karakterler (Ad / Cinsiyet-Rol)";
+        GlossaryHeaderText.Text = en ? "Glossary / Terms (X → Y)" : "Sözlük / Terimler (X → Y)";
+        AddCharacterBtn.Content = en ? "+ Add" : "+ Ekle";
+        RemoveCharacterBtn.Content = en ? "Delete" : "Sil";
+        AddGlossaryBtn.Content = en ? "+ Add" : "+ Ekle";
+        RemoveGlossaryBtn.Content = en ? "Delete" : "Sil";
+        ColCharName.Header = en ? "Name" : "Ad";
+        ColCharNote.Header = en ? "Note (gender/role)" : "Not (cinsiyet/rol)";
+        ColGlossarySrc.Header = en ? "Source Term" : "Kaynak Terim";
+        ColGlossaryTgt.Header = en ? "Target Translation" : "Türkçe / Hedef";
+        ProfilePreviewExpander.Header = en
+            ? "Hy-MT2 Prompt Context Preview ([Background Information])"
+            : "Hy-MT2 Prompt Bağlam Önizlemesi ([Background Information])";
+        RefreshGameProfileDropdowns();
+        UpdateProfilePromptPreview();
 
         LangSettingsHeaderText.Text = en ? "🌐 Language Settings (On-Screen Language → Translation)" : "🌐 Dil Ayarları (Ekrandaki Dil → Çeviri Dili)";
         SourceLangLabelText.Text = en ? "On-Screen Language (OCR):" : "Ekrandaki Dil (OCR):";
@@ -1950,20 +2270,36 @@ public partial class MainWindow : Window
             ? "Open solid-color OBS Chroma Key window"
             : "Düz renkli OBS Chroma Key penceresini aç";
         ObsChromaColorLabelText.Text = en ? "Chroma Background Color:" : "Chroma Arka Plan Rengi:";
+        ObsDropFreeHeaderText.Text = en
+            ? "RTX 3080 10 GB / Drop-Free 1080p Streaming Checklist"
+            : "RTX 3080 10 GB / Dropsuz 1080p Yayın Kontrol Listesi";
+        ObsDropFreeChecklistText.Text = en
+            ? "1. Run OBS Studio as Administrator (raises OBS GPU scheduling priority).\n2. OBS Output → Encoder: NVIDIA NVENC (Preset P5), keep 'Look-ahead' and 'Psycho Visual Tuning' OFF (leaves CUDA cores to the LLM).\n3. NVIDIA Control Panel → Manage 3D Settings → Program Settings → llama-server.exe → 'CUDA - Sysmem Fallback Policy: Prefer No Sysmem Fallback'.\n4. Click 'Start' in bitiq BEFORE going live to pre-load Hy-MT2 7B Q6_K into VRAM (never swap models mid-stream)."
+            : "1. OBS Studio'yu Yönetici Olarak çalıştırın (OBS'in GPU zamanlama önceliğini artırır).\n2. OBS Çıkış → Kodlayıcı: NVIDIA NVENC (Preset P5), 'Look-ahead' ve 'Psycho Visual Tuning' KAPALI (CUDA çekirdeklerini LLM'e bırakır).\n3. NVIDIA Denetim Masası → 3D Ayarları → Program Ayarları → llama-server.exe → 'CUDA - Sysmem Fallback Policy: Prefer No Sysmem Fallback'.\n4. Yayına başlamadan önce bitiq'te 'Başlat'a basıp Hy-MT2 7B Q6_K modelini VRAM'e ön-yükleyin (yayın ortasında model değiştirmeyin).";
 
         // Sekme 4: Gelişmiş & Tanı
         AdvLocalHeaderText.Text = en ? "Local Model & Latency Settings" : "Yerel Model ve Gecikme Ayarları";
+        AdvModelLabelText.Text = en ? "Local Translation Model" : "Yerel Çeviri Modeli";
         AdvQuantLabelText.Text = en ? "Model Quantization (Quality ↔ Speed)" : "Model Niceleme (Kalite ↔ Hız)";
         AdvBackendLabelText.Text = en ? "GPU / Backend" : "GPU / Arka Uç";
         AdvStabilityLabelText.Text = en ? "Speed ↔ Stability (Frames)" : "Hız ↔ Kararlılık (Kare)";
         AdvOcrEngineLabelText.Text = en ? "OCR Engine" : "OCR Motoru";
         AdvThreadsLabelText.Text = en ? "CPU Thread Count" : "CPU Thread Sayısı";
+        AdvContextLinesLabelText.Text = en ? "Context History (Lines)" : "Bağlam Geçmişi (Replik)";
+        AdvContextIdleLabelText.Text = en ? "Context Idle Reset" : "Bağlam Boşta Sıfırlama";
+        LocalizeComboItems(LocalModelCombo, en
+            ? new Dictionary<string, string> { ["HyMt2_7B"] = "Hy-MT2 7B (Q6_K — Context-Aware, Recommended)", ["TranslateGemma4B"] = "TranslateGemma 4B (Fast / Context-Free)" }
+            : new Dictionary<string, string> { ["HyMt2_7B"] = "Hy-MT2 7B (Q6_K — Bağlamlı, Önerilen)", ["TranslateGemma4B"] = "TranslateGemma 4B (Hızlı / Bağlamsız)" });
         LocalizeComboItems(OcrEngineCombo, en
             ? new Dictionary<string, string> { ["WindowsOcr"] = "Windows OCR (Built-in)", ["OneOcr"] = "OneOCR (Win11 Smart ONNX • Multi-Lang)" }
             : new Dictionary<string, string> { ["WindowsOcr"] = "Windows OCR (Yerleşik)", ["OneOcr"] = "OneOCR (Win11 Akıllı ONNX • Çoklu Dil)" });
-        LocalizeComboItems(QuantSelectionCombo, en
-            ? new Dictionary<string, string> { ["Q8_0"] = "Q8_0 (~3.85 GB — High Quality, Default)", ["Q4_K_M"] = "Q4_K_M (~2.32 GB — Faster & Lighter)" }
-            : new Dictionary<string, string> { ["Q8_0"] = "Q8_0 (~3.85 GB — Yüksek Kalite, Varsayılan)", ["Q4_K_M"] = "Q4_K_M (~2.32 GB — Daha Hızlı ve Hafif)" });
+        PopulateQuantComboForCurrentModel();
+        LocalizeComboItems(ContextMaxLinesCombo, en
+            ? new Dictionary<string, string> { ["4"] = "4 Lines (Light)", ["6"] = "6 Lines", ["8"] = "8 Lines (Recommended)", ["12"] = "12 Lines (Long)" }
+            : new Dictionary<string, string> { ["4"] = "4 Replik (Hafif)", ["6"] = "6 Replik", ["8"] = "8 Replik (Önerilen)", ["12"] = "12 Replik (Uzun)" });
+        LocalizeComboItems(ContextIdleResetCombo, en
+            ? new Dictionary<string, string> { ["45"] = "45 s", ["90"] = "90 s (Recommended)", ["180"] = "180 s", ["300"] = "300 s" }
+            : new Dictionary<string, string> { ["45"] = "45 sn", ["90"] = "90 sn (Önerilen)", ["180"] = "180 sn", ["300"] = "300 sn" });
         LocalizeComboItems(BackendCombo, en
             ? new Dictionary<string, string> { ["Auto"] = "Auto (CUDA → Vulkan → CPU)", ["Cuda"] = "CUDA", ["Vulkan"] = "Vulkan (Fallback)", ["Cpu"] = "CPU (Fallback)" }
             : new Dictionary<string, string> { ["Auto"] = "Otomatik (CUDA → Vulkan → CPU)", ["Cuda"] = "CUDA", ["Vulkan"] = "Vulkan (Yedek)", ["Cpu"] = "CPU (Yedek)" });
@@ -1974,6 +2310,7 @@ public partial class MainWindow : Window
         StreamingCheck.Content = en ? "Stream text with typewriter effect" : "Daktilo (typewriter) efektiyle akışlı göster";
         PreprocessCheck.Content = en ? "Smart Background Cleanup (recommended for outline-less subtitles)" : "Akıllı Arka Plan Temizleme (Arka plansız altyazılar için önerilen)";
         MergeIncompleteAdvCheck.Content = en ? "Merge incomplete sentences before translating" : "Bitmemiş cümleleri birleştirerek çevir";
+        SimulateVramCheck.Content = en ? "Simulate VRAM Limit (emulate a smaller GPU VRAM cap)" : "VRAM Simüle Et (Farklı ekran kartı limitini test et)";
         OpenWizardBtn.Content = en ? "Open Setup Wizard" : "Kurulum Sihirbazını Aç";
         OpenDataFolderBtn.Content = en ? "Open Settings & Model Folder" : "Ayar & Model Klasörünü Aç";
         DiagHeaderText.Text = en ? "Diagnostics (Last 50 Lines Avg & P95)" : "Tanı (Son 50 Satır Ortalama ve P95 Süreleri)";
@@ -1986,6 +2323,8 @@ public partial class MainWindow : Window
         ColDiagOcr.Header = "OCR (ms)";
         ColDiagFirstToken.Header = en ? "1st Token (ms)" : "1. Token (ms)";
         ColDiagTranslate.Header = en ? "Translate (ms)" : "Çeviri (ms)";
+        ColDiagCachedTok.Header = en ? "KV Hit" : "KV İsabet";
+        ColDiagTokSec.Header = "tok/s";
         ColDiagRender.Header = en ? "Render (ms)" : "Gösterim (ms)";
         ColDiagTotal.Header = en ? "Total (ms)" : "Toplam (ms)";
 
@@ -2003,6 +2342,7 @@ public partial class MainWindow : Window
         UpdateStyleSliderLabels(_settings.ActiveStyle);
         UpdateDebounceLabel();
         UpdateOcrConfidenceUi();
+        UpdateSimulateVramUi();
         RefreshLanguageCombos();
         UpdateLanguagePairLabels();
         if (!_isInstallingOcr)
@@ -2068,5 +2408,413 @@ public partial class MainWindow : Window
         _overlayWindow.Close();
         _chromaWindow?.Close();
         _testWindow?.Close();
+    }
+
+    // ==================== BAĞLAM (CONTEXT) VE OYUN PROFİLİ YÖNETİMİ ====================
+
+    private sealed class ActiveGameProfileOption
+    {
+        public string? Id { get; init; }
+        public string Label { get; init; } = string.Empty;
+        public override string ToString() => Label;
+    }
+
+    private void UpdateLocalEngineCardLabels()
+    {
+        bool en = IsEnglishUi;
+        if (_settings.LocalModel == LocalModelKind.HyMt2_7B)
+        {
+            EngineLocalTitleText.Text = en
+                ? "Local AI (Hy-MT2 7B Q6_K): offline, context-aware"
+                : "Yerel AI (Hy-MT2 7B Q6_K): internetsiz, bağlamlı";
+            EngineLocalDescText.Text = en
+                ? "Runs on RTX GPU (~5.74 GB). Uses recent dialogue, characters & glossary for natural subtitles."
+                : "RTX GPU üzerinde çalışır (~5.74 GB). Önceki replikleri, karakterleri ve sözlüğü bağlam olarak kullanır.";
+        }
+        else
+        {
+            EngineLocalTitleText.Text = en
+                ? "Local AI (TranslateGemma 4B): offline, fast"
+                : "Yerel AI (TranslateGemma 4B): internetsiz, hızlı";
+            EngineLocalDescText.Text = en
+                ? "Runs on RTX GPU. Lightweight sentence-by-sentence translation without context memory."
+                : "RTX GPU üzerinde çalışır. Bağlamsız, hafif ve hızlı cümle bazlı çeviri yapar.";
+        }
+    }
+
+    private void UpdateContextMemoryBadge(int count)
+    {
+        bool en = IsEnglishUi;
+        ContextMemoryBadgeText.Text = en
+            ? $"In memory: {count}/{_settings.ContextMaxLines} lines"
+            : $"Bellekte: {count}/{_settings.ContextMaxLines} replik";
+    }
+
+    private void UpdateContextControlsState()
+    {
+        bool en = IsEnglishUi;
+        bool isHyMt2 = _settings.LocalModel == LocalModelKind.HyMt2_7B;
+        bool contextActive = _settings.ContextEnabled && isHyMt2;
+
+        ContextEnabledCheck.IsEnabled = isHyMt2;
+        ActiveGameProfileCombo.IsEnabled = contextActive;
+        ResetContextBtn.IsEnabled = contextActive;
+
+        if (!isHyMt2)
+        {
+            ProfileModelNoticeBanner.Background = new SolidColorBrush(Color.FromRgb(69, 26, 3));
+            ProfileModelNoticeBanner.BorderBrush = new SolidColorBrush(Color.FromRgb(245, 158, 11));
+            ProfileModelNoticeText.Foreground = BrushInfoWarn;
+            ProfileModelNoticeText.Text = en
+                ? "⚠ TranslateGemma 4B is currently selected and does not use context/profiles. Switch to Hy-MT2 7B (Q6_K) in Advanced tab to enable context-aware translation."
+                : "⚠ Şu anda TranslateGemma 4B seçili olduğu için bağlam/profil kullanılmaz. Bağlamlı çeviri için Gelişmiş sekmesinden Hy-MT2 7B (Q6_K) modelini seçin.";
+        }
+        else
+        {
+            ProfileModelNoticeBanner.Background = new SolidColorBrush(Color.FromRgb(15, 23, 42));
+            ProfileModelNoticeBanner.BorderBrush = new SolidColorBrush(Color.FromRgb(51, 65, 85));
+            ProfileModelNoticeText.Foreground = BrushInfoMuted;
+            ProfileModelNoticeText.Text = en
+                ? "ℹ The active game profile and sliding dialogue history are automatically injected into Hy-MT2 7B (Q6_K) via KV prefix caching."
+                : "ℹ Aktif oyun profili ve kayan diyalog geçmişi Hy-MT2 7B (Q6_K) seçiliyken ön ek KV önbelleğiyle otomatik olarak modele iletilir.";
+        }
+    }
+
+    private void ReloadGameProfiles()
+    {
+        _gameProfiles = _gameProfileService.LoadAll();
+        RefreshCachedActiveProfile();
+        RefreshGameProfileDropdowns();
+
+        if (_editingProfile is null || !_gameProfiles.Any(p => p.Id == _editingProfile.Id))
+        {
+            var initial = _gameProfiles.FirstOrDefault(p => p.Id == _settings.ActiveGameProfileId)
+                ?? _gameProfiles.FirstOrDefault();
+            LoadGameProfileIntoEditor(initial);
+        }
+    }
+
+    private void RefreshCachedActiveProfile()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.ActiveGameProfileId))
+        {
+            _cachedActiveProfile = null;
+            return;
+        }
+
+        var match = _gameProfiles.FirstOrDefault(p => string.Equals(p.Id, _settings.ActiveGameProfileId, StringComparison.Ordinal));
+        _cachedActiveProfile = match?.Clone();
+    }
+
+    private void RefreshGameProfileDropdowns()
+    {
+        bool en = IsEnglishUi;
+        _uiSuppressCount++;
+        try
+        {
+            var activeItems = new List<ActiveGameProfileOption>
+            {
+                new()
+                {
+                    Id = null,
+                    Label = en ? "(No Profile — Dialogue History Only)" : "(Profil Yok — Yalnızca Diyalog Geçmişi)"
+                }
+            };
+            foreach (var p in _gameProfiles)
+            {
+                activeItems.Add(new ActiveGameProfileOption
+                {
+                    Id = p.Id,
+                    Label = string.IsNullOrWhiteSpace(p.Title) ? p.Id : p.Title
+                });
+            }
+
+            ActiveGameProfileCombo.ItemsSource = activeItems;
+            ActiveGameProfileCombo.SelectedItem = activeItems.FirstOrDefault(x =>
+                string.Equals(x.Id, _settings.ActiveGameProfileId, StringComparison.Ordinal)) ?? activeItems[0];
+
+            var editItems = _gameProfiles.ToList();
+            GameProfileEditCombo.ItemsSource = null;
+            GameProfileEditCombo.ItemsSource = editItems;
+            GameProfileEditCombo.DisplayMemberPath = nameof(GameProfile.Title);
+            if (_editingProfile is not null)
+            {
+                var editMatch = editItems.FirstOrDefault(p => string.Equals(p.Id, _editingProfile.Id, StringComparison.Ordinal));
+                if (editMatch is not null)
+                    GameProfileEditCombo.SelectedItem = editMatch;
+            }
+        }
+        finally
+        {
+            _uiSuppressCount--;
+        }
+    }
+
+    private void LoadGameProfileIntoEditor(GameProfile? profile)
+    {
+        _uiSuppressCount++;
+        try
+        {
+            _editingProfile = profile?.Clone() ?? new GameProfile();
+            GameTitleBox.Text = _editingProfile.Title;
+            GameSynopsisBox.Text = _editingProfile.Synopsis;
+            GameToneBox.Text = _editingProfile.ToneNote;
+
+            _editingCharacters.Clear();
+            foreach (var c in _editingProfile.Characters)
+                _editingCharacters.Add(c.Clone());
+
+            _editingGlossary.Clear();
+            foreach (var g in _editingProfile.Glossary)
+                _editingGlossary.Add(g.Clone());
+        }
+        finally
+        {
+            _uiSuppressCount--;
+        }
+
+        UpdateProfilePromptPreview();
+    }
+
+    private GameProfile CollectEditorProfile()
+    {
+        CharactersGrid.CommitEdit(DataGridEditingUnit.Row, true);
+        GlossaryGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
+        var p = _editingProfile is not null ? _editingProfile.Clone() : new GameProfile();
+        if (string.IsNullOrWhiteSpace(p.Id))
+            p.Id = Guid.NewGuid().ToString("N");
+
+        p.Title = GameTitleBox.Text.Trim();
+        p.Synopsis = GameSynopsisBox.Text.Trim();
+        p.ToneNote = GameToneBox.Text.Trim();
+        p.Characters = _editingCharacters
+            .Where(c => !string.IsNullOrWhiteSpace(c.Name))
+            .Select(c => new CharacterEntry(c.Name.Trim(), c.Note?.Trim()))
+            .ToList();
+        p.Glossary = _editingGlossary
+            .Where(g => !string.IsNullOrWhiteSpace(g.Source) && !string.IsNullOrWhiteSpace(g.Target))
+            .Select(g => new GlossaryEntry(g.Source.Trim(), g.Target.Trim()))
+            .ToList();
+        return p;
+    }
+
+    private void UpdateProfilePromptPreview()
+    {
+        var p = new GameProfile
+        {
+            Id = _editingProfile?.Id ?? "preview",
+            Title = GameTitleBox.Text.Trim(),
+            Synopsis = GameSynopsisBox.Text.Trim(),
+            ToneNote = GameToneBox.Text.Trim(),
+            Characters = _editingCharacters.Where(c => !string.IsNullOrWhiteSpace(c.Name)).Select(c => c.Clone()).ToList(),
+            Glossary = _editingGlossary.Where(g => !string.IsNullOrWhiteSpace(g.Source) && !string.IsNullOrWhiteSpace(g.Target)).Select(g => g.Clone()).ToList()
+        };
+
+        string preview = HyMt2PromptBuilder.BuildBackgroundPreview(p, _settings.TargetLanguage);
+        ProfilePromptPreviewBox.Text = string.IsNullOrWhiteSpace(preview)
+            ? (IsEnglishUi ? "(Fill in fields above to preview the context injected into Hy-MT2)" : "(Hy-MT2'ye iletilecek bağlamı görmek için yukarıdaki alanları doldurun)")
+            : preview;
+    }
+
+    private void ContextEnabledCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (IsUiSuppressed)
+            return;
+
+        _settings.ContextEnabled = ContextEnabledCheck.IsChecked == true;
+        _settingsService.Save(_settings);
+        UpdateContextControlsState();
+        _pipeline.ApplyLiveSettings(_settings);
+    }
+
+    private void ActiveGameProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsUiSuppressed || ActiveGameProfileCombo.SelectedItem is not ActiveGameProfileOption opt)
+            return;
+
+        _settings.ActiveGameProfileId = opt.Id;
+        _settingsService.Save(_settings);
+        RefreshCachedActiveProfile();
+        _pipeline.ApplyLiveSettings(_settings);
+    }
+
+    private void EditGameProfileBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.ActiveGameProfileId))
+        {
+            var match = _gameProfiles.FirstOrDefault(p => p.Id == _settings.ActiveGameProfileId);
+            if (match is not null)
+                LoadGameProfileIntoEditor(match);
+        }
+        MainTabs.SelectedItem = MainTabProfiles;
+    }
+
+    private void ResetContextBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _pipeline.ResetContext();
+        StatusDetailText.Text = IsEnglishUi
+            ? "Dialogue context memory cleared."
+            : "Diyalog bağlam geçmişi sıfırlandı.";
+    }
+
+    private void GameProfileEditCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsUiSuppressed || GameProfileEditCombo.SelectedItem is not GameProfile selected)
+            return;
+
+        LoadGameProfileIntoEditor(selected);
+    }
+
+    private void NewGameProfile_Click(object sender, RoutedEventArgs e)
+    {
+        LoadGameProfileIntoEditor(new GameProfile
+        {
+            Title = IsEnglishUi ? "New Game" : "Yeni Oyun"
+        });
+        GameTitleBox.Focus();
+        GameTitleBox.SelectAll();
+    }
+
+    private void SaveGameProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var profile = CollectEditorProfile();
+        if (string.IsNullOrWhiteSpace(profile.Title))
+        {
+            MessageBox.Show(
+                IsEnglishUi ? "Please enter a game title before saving." : "Kaydetmeden önce lütfen bir oyun adı girin.",
+                IsEnglishUi ? "Game Profile" : "Oyun Profili",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        _gameProfileService.Save(profile);
+        _settings.ActiveGameProfileId = profile.Id;
+        _settingsService.Save(_settings);
+
+        _editingProfile = profile.Clone();
+        ReloadGameProfiles();
+        LoadGameProfileIntoEditor(profile);
+        _pipeline.ApplyLiveSettings(_settings);
+
+        StatusDetailText.Text = IsEnglishUi
+            ? $"Game profile saved and activated: {profile.Title}"
+            : $"Oyun profili kaydedildi ve aktifleştirildi: {profile.Title}";
+    }
+
+    private void DeleteGameProfile_Click(object sender, RoutedEventArgs e)
+    {
+        if (_editingProfile is null || !_gameProfiles.Any(p => p.Id == _editingProfile.Id))
+        {
+            LoadGameProfileIntoEditor(null);
+            return;
+        }
+
+        string idToDelete = _editingProfile.Id;
+        _gameProfileService.Delete(idToDelete);
+        if (string.Equals(_settings.ActiveGameProfileId, idToDelete, StringComparison.Ordinal))
+        {
+            _settings.ActiveGameProfileId = null;
+            _settingsService.Save(_settings);
+        }
+
+        _editingProfile = null;
+        ReloadGameProfiles();
+        _pipeline.ApplyLiveSettings(_settings);
+    }
+
+    private void ExportGameProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var profile = CollectEditorProfile();
+        string safeName = string.IsNullOrWhiteSpace(profile.Title) ? "game_profile" : profile.Title.Replace(' ', '_');
+        var sfd = new SaveFileDialog
+        {
+            Filter = "JSON Oyun Profili (*.json)|*.json",
+            FileName = $"{safeName}.json"
+        };
+        if (sfd.ShowDialog() == true)
+        {
+            _gameProfileService.ExportToFile(profile, sfd.FileName);
+        }
+    }
+
+    private void ImportGameProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var ofd = new OpenFileDialog
+        {
+            Filter = "JSON Oyun Profili (*.json)|*.json"
+        };
+        if (ofd.ShowDialog() == true)
+        {
+            try
+            {
+                var imported = _gameProfileService.ImportFromFile(ofd.FileName);
+                _settings.ActiveGameProfileId = imported.Id;
+                _settingsService.Save(_settings);
+                _editingProfile = imported.Clone();
+                ReloadGameProfiles();
+                LoadGameProfileIntoEditor(imported);
+                _pipeline.ApplyLiveSettings(_settings);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    IsEnglishUi ? $"Could not import profile: {ex.Message}" : $"Profil içe aktarılamadı: {ex.Message}",
+                    IsEnglishUi ? "Error" : "Hata",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+    }
+
+    private void AddCharacterRow_Click(object sender, RoutedEventArgs e)
+    {
+        var item = IsEnglishUi
+            ? new CharacterEntry("Character", "note")
+            : new CharacterEntry("Karakter", "not");
+        _editingCharacters.Add(item);
+        CharactersGrid.SelectedItem = item;
+        UpdateProfilePromptPreview();
+    }
+
+    private void RemoveCharacterRow_Click(object sender, RoutedEventArgs e)
+    {
+        if (CharactersGrid.SelectedItem is CharacterEntry item)
+        {
+            _editingCharacters.Remove(item);
+            UpdateProfilePromptPreview();
+        }
+    }
+
+    private void AddGlossaryRow_Click(object sender, RoutedEventArgs e)
+    {
+        var item = IsEnglishUi
+            ? new GlossaryEntry("Source term", "Translation")
+            : new GlossaryEntry("Terim", "Çevirisi");
+        _editingGlossary.Add(item);
+        GlossaryGrid.SelectedItem = item;
+        UpdateProfilePromptPreview();
+    }
+
+    private void RemoveGlossaryRow_Click(object sender, RoutedEventArgs e)
+    {
+        if (GlossaryGrid.SelectedItem is GlossaryEntry item)
+        {
+            _editingGlossary.Remove(item);
+            UpdateProfilePromptPreview();
+        }
+    }
+
+    private void ProfileField_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (IsUiSuppressed)
+            return;
+        UpdateProfilePromptPreview();
+    }
+
+    private void ProfileGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e)
+    {
+        Dispatcher.BeginInvoke(UpdateProfilePromptPreview);
     }
 }

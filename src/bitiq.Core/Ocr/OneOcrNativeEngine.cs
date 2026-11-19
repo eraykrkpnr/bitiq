@@ -38,8 +38,7 @@ public sealed partial class OneOcrNativeEngine : IDisposable
     public string? LastError => _lastError;
 
     public static string LocalCustomDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "bitiq",
+        AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
         "oneocr");
 
     public static OcrCheckResult CheckAvailability()
@@ -53,17 +52,16 @@ public sealed partial class OneOcrNativeEngine : IDisposable
         return new OcrCheckResult(
             false,
             null,
-            "OneOCR dosyaları (oneocr.dll, oneocr.onemodel, onnxruntime.dll) uygulama veya yerel klasörde bulunamadı.",
-            $"OneOCR'ı kullanmak için oneocr.dll, oneocr.onemodel ve onnxruntime.dll dosyalarını uygulama yanındaki 'oneocr' klasörüne ({Path.Combine(AppContext.BaseDirectory, "oneocr")}) veya {LocalCustomDirectory} klasörüne yerleştirin.");
+            "OneOCR dosyaları (oneocr.dll, oneocr.onemodel, onnxruntime.dll) uygulama klasöründe bulunamadı.",
+            $"OneOCR'ı kullanmak için oneocr.dll, oneocr.onemodel ve onnxruntime.dll dosyalarını uygulama yanındaki 'oneocr' klasörüne ({LocalCustomDirectory}) yerleştirin.");
     }
 
     public static string? DiscoverRuntimeDirectory()
     {
         string[] candidates =
         [
-            Path.Combine(AppContext.BaseDirectory, "oneocr"),
-            AppContext.BaseDirectory,
-            LocalCustomDirectory
+            LocalCustomDirectory,
+            AppContext.BaseDirectory
         ];
 
         foreach (string dir in candidates)
@@ -102,7 +100,7 @@ public sealed partial class OneOcrNativeEngine : IDisposable
             string? dir = DiscoverRuntimeDirectory();
             if (dir is null)
             {
-                _lastError = $"OneOCR dosyaları bulunamadı (aranan yerler: {Path.Combine(AppContext.BaseDirectory, "oneocr")} veya {LocalCustomDirectory}).";
+                _lastError = $"OneOCR dosyaları bulunamadı (aranan yer: {LocalCustomDirectory}).";
                 _lastFailedInitUtc = DateTime.UtcNow;
                 errorMessage = _lastError;
                 return false;

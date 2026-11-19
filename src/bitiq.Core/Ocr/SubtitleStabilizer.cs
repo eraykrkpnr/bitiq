@@ -602,6 +602,10 @@ public sealed partial class SubtitleStabilizer
             if (IsLikelyGarbageLine(line))
                 continue;
 
+            line = StripLeadingUppercaseNoisePrefix(line);
+            if (string.IsNullOrWhiteSpace(line) || IsLikelyGarbageLine(line))
+                continue;
+
             keptLines.Add(line);
         }
 
@@ -746,6 +750,9 @@ public sealed partial class SubtitleStabilizer
         if (string.IsNullOrWhiteSpace(line))
             return true;
 
+        if (IsIsolatedUppercaseNoiseLine(line))
+            return true;
+
         ComputeWordQuality(line, out int cleanWords, out int garbageWords, out int totalTokens);
         if (totalTokens == 0 || cleanWords == 0)
             return true;
@@ -757,6 +764,104 @@ public sealed partial class SubtitleStabilizer
             return true;
 
         return false;
+    }
+
+    private static readonly HashSet<string> AllowedShortUppercaseWords = new(StringComparer.Ordinal)
+    {
+        // Yaygın kısa kelimeler / ünlemler
+        "OK", "NO", "YES", "HI", "HEY", "BYE", "OH", "AH", "UH", "UM", "ER", "OW",
+        "GO", "RUN", "STOP", "WAIT", "HELP", "LOOK", "COME", "BACK", "AWAY", "HERE",
+        "DOWN", "OVER", "OUT", "OFF", "NOW", "SOON", "LATE", "NEXT", "DONE", "FINE",
+        "SURE", "COOL", "GOOD", "BAD", "NICE", "REAL", "TRUE", "SAFE", "DEAD", "DIE",
+        "KILL", "MOVE", "STAY", "HOLD", "OPEN", "EXIT", "SAVE", "LOAD", "PLAY", "SKIP",
+        "MENU", "DAMN", "HELL", "SHIT", "FUCK", "GOD", "SIR", "MAN", "BRO", "DAD",
+        "MOM", "SON", "KID", "GUY", "GIRL", "BOY", "WHO", "WHY", "HOW", "WHAT", "WHEN",
+        "THE", "AND", "FOR", "YOU", "ARE", "NOT", "BUT", "ALL", "CAN", "WAS", "ONE",
+        "TWO", "OUR", "NEW", "OLD", "SEE", "WAY", "DID", "LET", "SAY", "TOO", "USE",
+        "TRY", "ASK", "GET", "GOT", "HAD", "HAS", "HER", "HIM", "HIS", "ITS", "OWN",
+        "WE", "HE", "IT", "IS", "DO", "IF", "AS", "OR", "AN", "OF", "IN", "ON", "AT", "TO", "BY", "MY", "UP", "ME", "SO",
+        // Yaygın kısaltmalar / oyun terimleri
+        "TV", "PC", "PS", "PS5", "PS4", "AI", "VR", "AR", "DJ", "ID", "HP", "MP", "XP",
+        "UK", "US", "USA", "EU", "UN", "LA", "NY", "NYC", "DC", "FBI", "CIA", "NSA",
+        "SWAT", "DNA", "VIP", "SOS", "ATM", "GPS", "CEO", "MD", "DR", "MR", "MS",
+        "MRS", "ST", "AM", "PM", "OMG", "WTF", "LOL", "WLF", "SMOD"
+    };
+
+    /// <summary>
+    /// Arka plan tabela/doku parazitinden okunan noktalama işaretsiz 2-4 harfli BÜYÜK HARF parçalarını (ör. "SA", "ATE", "INM", "ATE ATE") tespit eder.
+    /// </summary>
+    public static bool IsIsolatedUppercaseNoiseLine(string line)
+    {
+        if (!IsEnglishSourceMode || string.IsNullOrWhiteSpace(line))
+            return false;
+
+        string trimmed = line.Trim();
+        foreach (char ch in trimmed)
+        {
+            if (ch is '.' or '!' or '?' or ':' or ';' or ',' or '\u2026' or '-' or '"' or '\'' or '\u2019' or '\u201D')
+                return false;
+        }
+
+        var tokens = trimmed.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length is < 1 or > 2)
+            return false;
+
+        foreach (string token in tokens)
+        {
+            if (token.Length is < 2 or > 4)
+                return false;
+            foreach (char ch in token)
+            {
+                if (ch is not (>= 'A' and <= 'Z'))
+                    return false;
+            }
+        }
+
+        if (tokens.Length == 1)
+            return !AllowedShortUppercaseWords.Contains(tokens[0]);
+
+        return string.Equals(tokens[0], tokens[1], StringComparison.Ordinal)
+            || (!AllowedShortUppercaseWords.Contains(tokens[0]) && !AllowedShortUppercaseWords.Contains(tokens[1]));
+    }
+
+    private static string StripLeadingUppercaseNoisePrefix(string line)
+    {
+        if (!IsEnglishSourceMode || string.IsNullOrWhiteSpace(line))
+            return line;
+
+        string current = line.TrimStart();
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int spaceIdx = current.IndexOf(' ');
+            if (spaceIdx <= 0)
+                break;
+
+            string first = current[..spaceIdx];
+            string rest = current[(spaceIdx + 1)..].TrimStart();
+            if (first.Length is < 2 or > 4 || rest.Length < 3)
+                break;
+
+            bool allAsciiUpper = true;
+            foreach (char ch in first)
+            {
+                if (ch is not (>= 'A' and <= 'Z'))
+                {
+                    allAsciiUpper = false;
+                    break;
+                }
+            }
+
+            if (!allAsciiUpper || AllowedShortUppercaseWords.Contains(first))
+                break;
+
+            // Devam metni normal diyalog cümlesi (küçük harf içeren gerçek cümle) olmalı
+            if (!rest.Any(char.IsLower))
+                break;
+
+            current = rest;
+        }
+
+        return current;
     }
 
     private static readonly char[] EdgeNoiseChars = [' ', '\t', '•', '·', '|', '_', '~', '—', '–'];

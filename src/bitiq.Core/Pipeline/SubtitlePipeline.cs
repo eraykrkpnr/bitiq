@@ -29,8 +29,10 @@ public sealed partial class SubtitlePipeline : IDisposable
     private readonly WindowsOcrService _ocrService;
     private readonly SubtitleStabilizer _stabilizer;
     private readonly DiagnosticsTracker _diagnostics;
+    private readonly ConversationContextTracker _context = new();
     private readonly Func<ITranslator> _translatorProvider;
     private readonly Func<AppSettings> _settingsProvider;
+    private readonly Func<GameProfile?> _profileProvider;
 
     private readonly object _pipelineLock = new();
     private readonly object _mergeLock = new();
@@ -42,6 +44,8 @@ public sealed partial class SubtitlePipeline : IDisposable
     private long _lastShownTimestampMs;
     private long _lastWindowCheckMs;
     private string _currentlyDisplayedTurkish = string.Empty;
+    private string _lastTargetLanguage = string.Empty;
+    private string? _lastProfileId;
     private string _incompleteSentenceRaw = string.Empty;
     private string _incompleteSentenceNormalized = string.Empty;
     private long _incompleteSentenceTimestampMs;
@@ -56,27 +60,37 @@ public sealed partial class SubtitlePipeline : IDisposable
     private bool _disposed;
 
     public PipelineState State => _state;
+    public int ContextLineCount => _context.Count;
     public event Action<SubtitleUpdateEvent>? SubtitleUpdated;
     public event Action<PipelineState, string>? StateChanged;
+    public event Action<int>? ContextLineCountChanged;
 
     public SubtitlePipeline(
         WgcRegionCaptureService captureService,
         WindowsOcrService ocrService,
         DiagnosticsTracker diagnostics,
         Func<ITranslator> translatorProvider,
-        Func<AppSettings> settingsProvider)
+        Func<AppSettings> settingsProvider,
+        Func<GameProfile?>? profileProvider = null)
     {
         _captureService = captureService;
         _ocrService = ocrService;
         _diagnostics = diagnostics;
         _translatorProvider = translatorProvider;
         _settingsProvider = settingsProvider;
+        _profileProvider = profileProvider ?? (() => null);
         _stabilizer = new SubtitleStabilizer();
 
         _captureService.FrameChanged += OnFrameChanged;
         _captureService.ErrorOccurred += OnCaptureErrorOccurred;
         _ocrService.TextRecognized += OnOcrTextRecognized;
         _ocrService.ErrorOccurred += OnOcrErrorOccurred;
+    }
+
+    public void ResetContext()
+    {
+        _context.Reset();
+        ContextLineCountChanged?.Invoke(0);
     }
 
     public async Task StartAsync(CancellationToken ct = default, IntPtr targetWindowHwnd = default)
@@ -111,6 +125,10 @@ public sealed partial class SubtitlePipeline : IDisposable
 
         _stabilizer.Configure(settings.StabilityFrames, settings.TypewriterDebounceMs);
         _stabilizer.Reset();
+        _context.Configure(settings.ContextMaxLines, settings.ContextTrimToLines, settings.ContextIdleResetSeconds);
+        ResetContext();
+        _lastTargetLanguage = settings.TargetLanguage;
+        _lastProfileId = settings.ActiveGameProfileId;
         _ocrService.SetPreprocessEnabled(settings.OcrPreprocessEnabled);
         _ocrService.ResetGlyphCache();
         ResetIncompleteBuffer();
@@ -138,6 +156,7 @@ public sealed partial class SubtitlePipeline : IDisposable
         _stabilizer.Reset();
         _ocrService.ResetGlyphCache();
         ResetIncompleteBuffer();
+        ResetContext();
 
         EmitClear();
         SetState(PipelineState.Stopped, "Hazır");
@@ -149,12 +168,23 @@ public sealed partial class SubtitlePipeline : IDisposable
             || Math.Abs(_ocrService.MinWordConfidence - settings.OcrMinConfidence) > 0.001
             || !string.Equals(_ocrService.ActiveSourceLanguageCode, settings.SourceLanguage, StringComparison.OrdinalIgnoreCase);
 
+        bool targetLangChanged = !string.Equals(_lastTargetLanguage, settings.TargetLanguage, StringComparison.OrdinalIgnoreCase);
+        bool profileChanged = !string.Equals(_lastProfileId, settings.ActiveGameProfileId, StringComparison.Ordinal);
+
         if (ocrChanged)
         {
             _ocrService.ConfigureEngine(settings.OcrEngine, settings.OcrMinConfidence, settings.SourceLanguage);
             _stabilizer.Reset();
             ResetIncompleteBuffer();
         }
+
+        _context.Configure(settings.ContextMaxLines, settings.ContextTrimToLines, settings.ContextIdleResetSeconds);
+        if (ocrChanged || targetLangChanged || profileChanged || !settings.ContextEnabled)
+        {
+            ResetContext();
+        }
+        _lastTargetLanguage = settings.TargetLanguage;
+        _lastProfileId = settings.ActiveGameProfileId;
 
         _stabilizer.Configure(settings.StabilityFrames, settings.TypewriterDebounceMs);
         _ocrService.SetPreprocessEnabled(settings.OcrPreprocessEnabled);
@@ -331,6 +361,14 @@ public sealed partial class SubtitlePipeline : IDisposable
 
         try
         {
+            bool useContext = settings.ContextEnabled
+                && settings.TranslationEngine == TranslationEngineKind.Local
+                && settings.LocalModel == LocalModelKind.HyMt2_7B;
+
+            TranslationContextSnapshot? ctxSnap = useContext
+                ? _context.Snapshot(_profileProvider(), sourceText, Environment.TickCount64)
+                : null;
+
             var result = await translator.TranslateAsync(
                 sourceText,
                 settings.SourceLanguage,
@@ -368,7 +406,8 @@ public sealed partial class SubtitlePipeline : IDisposable
                     swRender.Stop();
                     renderMs = swRender.Elapsed.TotalMilliseconds;
                 },
-                ct).ConfigureAwait(false);
+                ct,
+                ctxSnap).ConfigureAwait(false);
 
             if (ct.IsCancellationRequested || result.WasCancelled)
                 return;
@@ -383,6 +422,12 @@ public sealed partial class SubtitlePipeline : IDisposable
                 return;
 
             Volatile.Write(ref _currentlyDisplayedTurkish, result.TranslatedText);
+
+            if (useContext)
+            {
+                int newCount = _context.Commit(sourceText, result.TranslatedText, Environment.TickCount64);
+                ContextLineCountChanged?.Invoke(newCount);
+            }
 
             double endToEndMs = (Stopwatch.GetTimestamp() - capturedTicks) * 1000.0 / Stopwatch.Frequency;
             if (endToEndMs < 0 || endToEndMs > 60000)
@@ -399,7 +444,10 @@ public sealed partial class SubtitlePipeline : IDisposable
                 FirstTokenMs = Math.Round(result.FirstTokenMs, 1),
                 TotalTranslateMs = Math.Round(result.TotalMs, 1),
                 RenderMs = Math.Round(renderMs, 1),
-                TotalEndToEndMs = Math.Round(endToEndMs, 1)
+                TotalEndToEndMs = Math.Round(endToEndMs, 1),
+                PromptTokens = result.PromptTokens,
+                CachedTokens = result.CachedTokens,
+                TokensPerSecond = result.TokensPerSecond
             });
 
             SetState(PipelineState.Running, $"Çalışıyor ({translator.EngineName})");
